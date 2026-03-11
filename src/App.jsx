@@ -5,7 +5,7 @@ import { doc, getDoc, setDoc, collection, onSnapshot } from "firebase/firestore"
 const TEACHER_PASSWORD = "rebbe2025";
 
 async function callClaude(user, system, max = 400) {
-  const r = await fetch("http://localhost:3001/api/claude", {
+  const r = await fetch("https://ksa-app-production.up.railway.app/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
