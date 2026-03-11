@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "node server.js",
     "server": "node -r dotenv/config server.js",
     "build": "vite build",
     "preview": "vite preview"
