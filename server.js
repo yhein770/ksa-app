@@ -26,4 +26,5 @@ console.log("Anthropic response:", JSON.stringify(data).slice(0, 200));
 }
 });
 
-app.listen(3001, () => console.log('Claude proxy running on port 3001'));
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log(`Claude proxy running on port ${PORT}`));
