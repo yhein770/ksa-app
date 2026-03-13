@@ -32,20 +32,19 @@ app.post('/api/claude', async (req, res) => {
 
 app.post('/api/whisper', upload.single('audio'), async (req, res) => {
   try {
-    const form = new FormData();
-    form.append('file', req.file.buffer, {
-  filename: 'audio.webm',
-  contentType: 'audio/webm',
-  knownLength: req.file.buffer.length,
-});
-    form.append('model', 'whisper-1');
-    if (req.body.language) form.append('language', req.body.language);
+    const FormDataNode = (await import('formdata-node')).FormData;
+    const { Blob } = await import('buffer');
+    
+    const form = new FormDataNode();
+    const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
+    form.set('file', blob, 'audio.webm');
+    form.set('model', 'whisper-1');
+    if (req.body.language) form.set('language', req.body.language);
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        ...form.getHeaders()
       },
       body: form
     });
