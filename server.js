@@ -34,9 +34,10 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
   try {
     const form = new FormData();
     form.append('file', req.file.buffer, {
-      filename: 'audio.webm',
-      contentType: req.file.mimetype,
-    });
+  filename: 'audio.webm',
+  contentType: 'audio/webm',
+  knownLength: req.file.buffer.length,
+});
     form.append('model', 'whisper-1');
     if (req.body.language) form.append('language', req.body.language);
 
