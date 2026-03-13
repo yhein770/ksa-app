@@ -1,7 +1,11 @@
 import express from 'express';
 import cors from 'cors';
+import multer from 'multer';
+import FormData from 'form-data';
 
 const app = express();
+const upload = multer();
+
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
@@ -17,14 +21,40 @@ app.post('/api/claude', async (req, res) => {
       body: JSON.stringify(req.body)
     });
     const data = await response.json();
-console.log("Anthropic status:", response.status);
-console.log("Anthropic response:", JSON.stringify(data).slice(0, 200));
+    console.log("Anthropic status:", response.status);
+    console.log("Anthropic response:", JSON.stringify(data).slice(0, 200));
     res.json(data);
   } catch (err) {
-  console.error("Server error:", err);
-  res.status(500).json({ error: err.message });
-}
+    console.error("Server error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/whisper', upload.single('audio'), async (req, res) => {
+  try {
+    const form = new FormData();
+    form.append('file', req.file.buffer, {
+      filename: 'audio.webm',
+      contentType: req.file.mimetype,
+    });
+    form.append('model', 'whisper-1');
+    if (req.body.language) form.append('language', req.body.language);
+
+    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        ...form.getHeaders()
+      },
+      body: form
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("Whisper error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Claude proxy running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
