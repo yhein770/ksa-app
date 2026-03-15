@@ -946,7 +946,7 @@ function Kriah({ seif, onPass }) {
   console.log("chunks:", chunksRef.current.length, "blob size:", blob.size);
  const [heTranscript, enTranscript] = await Promise.all([
   callWhisper(blob, "he"),
-  callWhisper(blob, "en")
+  callWhisper(blob, null)
 ]);
 console.log("he transcript:", heTranscript);
 console.log("en transcript:", enTranscript);
@@ -972,7 +972,7 @@ async function gradeKriah(heTranscript, enTranscript, heText, enText) {
       300
     ),
     callClaude(
-      `A student read a Hebrew text aloud and translated it into English as they went.\n\nExpected English translation: "${enText}"\nStudent's English (extracted from transcript): "${enTranscript}"\n\nGrade ONLY the English translation accuracy. Be generous — this is an oral assessment by a fluent student. Award high marks if the core meaning and key concepts are conveyed, even if the wording differs. Only penalize for clearly wrong or missing concepts.\n\nCOVERAGE RULE: If the student clearly only translated part of the text, cap the score at 50%.\n\nRespond ONLY in this exact format:\nSCORE: [0-100]\nFEEDBACK: [one encouraging sentence noting what was good and what to improve]`,
+      `A student read a Hebrew text aloud and translated it into English as they went.\n\nExpected English translation: "${enText}"\nStudent's English (extracted from transcript): "${enTranscript}"\n\nCompare ONLY the English words in the transcript (not including transliterated Hebrew) against the expected text. Completely ignore any Hebrew words that appear — the student was translating as they read and some Hebrew may bleed through. Be generous — this is an oral assessment by a fluent student. Award high marks if the core meaning and key concepts are conveyed, even if the wording differs. Only penalize for clearly wrong or missing concepts.\n\nCOVERAGE RULE: If the student clearly only translated part of the text, cap the score at 50%.\n\nRespond ONLY in this exact format:\nSCORE: [0-100]\nFEEDBACK: [one encouraging sentence noting what was good and what to improve]`,
       "You are a very generous Hebrew teacher grading an oral English translation. There are many valid ways to translate Hebrew — grade on meaning, not exact wording. A fluent student who conveys the correct meaning in natural English should score 70%. Only deduct points for genuinely wrong or missing concepts, not for different but valid phrasings. Reply ONLY in the exact format specified.",
       150
     )

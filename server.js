@@ -105,9 +105,10 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
       if (pollData.status === 'failed') throw new Error("Soniox transcription failed");
     }
 
-    const text = result?.text || '';
-    console.log("Soniox final text:", text.slice(0, 200));
-    res.json({ text });
+    console.log("Soniox full result:", JSON.stringify(result).slice(0, 500));
+const text = result?.text || result?.result?.text || result?.transcript || '';
+console.log("Soniox final text:", text.slice(0, 200));
+res.json({ text });
   } catch (err) {
     console.error("Soniox error:", err);
     res.status(500).json({ error: err.message });
