@@ -55,6 +55,29 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
+app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
+  try {
+    const response = await fetch('https://api.soniox.com/v1/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.SONIOX_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'soniox-multilingual-2025-09',
+        language: 'he',
+        audio: req.file.buffer.toString('base64'),
+        audio_format: 'webm',
+      })
+    });
+    const data = await response.json();
+    console.log("Soniox response:", JSON.stringify(data).slice(0, 200));
+    const text = data.text || data.transcript || '';
+    res.json({ text });
+  } catch (err) {
+    console.error("Soniox error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
