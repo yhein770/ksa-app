@@ -967,9 +967,9 @@ const score = await gradeKriah(heTranscript, enTranscript, seif.he, seif.en);
 async function gradeKriah(heTranscript, enTranscript, heText, enText) {
   const [heResponse, enResponse] = await Promise.all([
     callClaude(
-`A student read this Hebrew text aloud and translated into English as they went.\n\nExpected Hebrew text: "${heText}"\nSoniox Hebrew transcript: "${heTranscript}"\n\nCompare ONLY the Hebrew words in the transcript against the expected text. Completely ignore any English words that appear — the student was translating as they read and some English may bleed through.\n\nIMPORTANT: Accept all phonetic variants — sin/shin, alef/ayin, kaf/kuf, tet/tav, vav/bet confusion and spacing differences are all fine. Only penalize for words with clearly different roots or large sections that are entirely missing.\n\nA fluent reader who reads all words correctly should score 85-95%. Only deduct for genuinely wrong or skipped words.\n\nCOVERAGE RULE: If fewer than half the Hebrew words appear, cap at 50%.\n\nRespond ONLY in this exact format:\nSCORE: [0-100]\nFEEDBACK: [one encouraging sentence noting what was good and what to improve]`,
-"You are a generous Hebrew teacher grading oral Hebrew reading. The transcript is Hebrew-only from a dedicated Hebrew transcription service. Grade on coverage and root accuracy only. Accept all phonetic variants. A student who reads everything correctly scores 85+. Reply ONLY in the exact format specified.",
-      300
+`A student read this Hebrew text aloud and translated into English as they went.\n\nExpected Hebrew text: "${heText}"\nSoniox Hebrew transcript: "${heTranscript}"\n\nCount what percentage of the source Hebrew words appear in the transcript in roughly correct order. Ignore English words completely. Accept all phonetic variants without exception — different spellings of the same word are correct.\n\nScoring:\n- 90%+ of words present → score 95\n- 75-90% of words present → score 85\n- 50-75% of words present → score 70\n- Under 50% → score 40\n\nDo not go below these scores for phonetic differences. Only go below if words are genuinely absent.\n\nRespond ONLY in this exact format:\nSCORE: [0-100]\nFEEDBACK: [one encouraging sentence]`,
+"You are checking Hebrew reading coverage only. Count words present vs absent. Phonetic variants always count as correct. Use the scoring table provided exactly. Reply ONLY in the exact format specified.",
+      200
     ),
     callClaude(
       `A student read a Hebrew text aloud and translated it into English as they went.\n\nExpected English translation: "${enText}"\nStudent's English (extracted from transcript): "${enTranscript}"\n\nCompare ONLY the English words in the transcript (not including transliterated Hebrew) against the expected text. Completely ignore any Hebrew words that appear — the student was translating as they read and some Hebrew may bleed through. Be generous — this is an oral assessment by a fluent student. Award high marks if the core meaning and key concepts are conveyed, even if the wording differs. Only penalize for clearly wrong or missing concepts.\n\nCOVERAGE RULE: If the student clearly only translated part of the text, cap the score at 50%.\n\nRespond ONLY in this exact format:\nSCORE: [0-100]\nFEEDBACK: [one encouraging sentence noting what was good and what to improve]`,
@@ -978,9 +978,11 @@ async function gradeKriah(heTranscript, enTranscript, heText, enText) {
     )
   ]);
 
-  const heScore = parseInt(heResponse.match(/SCORE:\s*(\d+)/)?.[1] || 0);
+  const heRaw = parseInt(heResponse.match(/SCORE:\s*(\d+)/)?.[1] || 0);
+const heScore = Math.min(100, heRaw + 10);
   const heFeedback = heResponse.match(/FEEDBACK:\s*(.+)/)?.[1] || "";
-  const enScore = parseInt(enResponse.match(/SCORE:\s*(\d+)/)?.[1] || 0);
+  const enRaw = parseInt(enResponse.match(/SCORE:\s*(\d+)/)?.[1] || 0);
+  const enScore = Math.min(100, enRaw + 10);
   const enFeedback = enResponse.match(/FEEDBACK:\s*(.+)/)?.[1] || "";
 
 return { heScore, heFeedback, enScore, enFeedback, passed: heScore >= 70 && enScore >= 70 };

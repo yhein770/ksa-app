@@ -92,7 +92,7 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
     // Step 3: Poll until complete
     let result = null;
     for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, i === 0 ? 1000 : 1500));
       const pollRes = await fetch(`https://api.soniox.com/v1/transcriptions/${transcriptId}`, {
         headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
       });
@@ -111,9 +111,10 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
     }
 
     console.log("Soniox result keys:", Object.keys(result || {}));
-    const text = result?.text || result?.transcript || result?.words?.map(w => w.text).join(' ') || '';
-    console.log("Soniox final text:", text.slice(0, 200));
-    res.json({ text });
+    const rawText = result?.text || result?.transcript || result?.words?.map(w => w.text).join(' ') || '';
+const text = rawText.split(' ').filter(w => /[\u05D0-\u05EA]/.test(w)).join(' ');
+console.log("Soniox final text:", text.slice(0, 200));
+res.json({ text });
   } catch (err) {
     console.error("Soniox error:", err);
     res.status(500).json({ error: err.message });
