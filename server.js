@@ -64,7 +64,7 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'soniox-multilingual-2025-09',
+        model: 'soniox-multilingual',
         language: 'he',
         audio: req.file.buffer.toString('base64'),
         audio_format: 'webm',
