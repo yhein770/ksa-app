@@ -103,14 +103,13 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
  console.log("Soniox poll full:", JSON.stringify(pollData).slice(0, 300));
 if (pollData.status === 'completed') {
   // Fetch the actual transcript
-  const transcriptFetch = await fetch(`https://api.soniox.com/v1/transcriptions/${transcriptId}/words`, {
-    headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
-  });
-  const transcriptContent = await transcriptFetch.json();
-  console.log("Soniox words response:", JSON.stringify(transcriptContent).slice(0, 500));
-  result = { ...pollData, _content: transcriptContent };
-  break;
-}
+  const transcriptFetch = await fetch(`https://api.soniox.com/v1/transcriptions/${transcriptId}`, {
+  headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
+});
+const transcriptContent = await transcriptFetch.json();
+console.log("Soniox FULL:", JSON.stringify(transcriptContent));
+result = transcriptContent;
+break;
       if (pollData.status === 'failed') throw new Error("Soniox transcription failed");
     }
 
