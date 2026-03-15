@@ -946,7 +946,7 @@ function Kriah({ seif, onPass }) {
   console.log("chunks:", chunksRef.current.length, "blob size:", blob.size);
  const [heTranscript, enTranscript] = await Promise.all([
   callWhisper(blob, "he"),
-  callWhisper(blob, null)
+  callWhisper(blob, "en")
 ]);
 console.log("he transcript:", heTranscript);
 console.log("en transcript:", enTranscript);

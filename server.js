@@ -105,8 +105,9 @@ if (pollData.status === 'completed') { result = pollData; break; }
       if (pollData.status === 'failed') throw new Error("Soniox transcription failed");
     }
 
-    console.log("Soniox full result:", JSON.stringify(result).slice(0, 500));
-const text = result?.text || result?.result?.text || result?.transcript || '';
+console.log("Soniox full result:", JSON.stringify(result).slice(0, 2000));
+const words = result?.words?.map(w => w.text).join(' ') || '';
+const text = result?.text || words || result?.result?.text || result?.transcript || '';
 console.log("Soniox final text:", text.slice(0, 200));
 res.json({ text });
   } catch (err) {
