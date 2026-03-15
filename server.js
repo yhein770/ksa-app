@@ -34,18 +34,14 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
   try {
     const FormDataNode = (await import('formdata-node')).FormData;
     const { Blob } = await import('buffer');
-    
     const form = new FormDataNode();
     const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
     form.set('file', blob, 'audio.webm');
     form.set('model', 'whisper-1');
     if (req.body.language) form.set('language', req.body.language);
-
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
+      headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
       body: form
     });
     const data = await response.json();
@@ -55,15 +51,16 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
   try {
-    // Step 1: Upload the file
     const { FormData: NodeFormData } = await import('formdata-node');
     const { Blob } = await import('buffer');
     const form = new NodeFormData();
     const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
     form.set('file', blob, 'audio.webm');
 
+    // Step 1: Upload
     const uploadRes = await fetch('https://api.soniox.com/v1/files', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` },
@@ -100,31 +97,24 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
         headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
       });
       const pollData = await pollRes.json();
- console.log("Soniox poll full:", JSON.stringify(pollData).slice(0, 300));
-if (pollData.status === 'completed') {
-  // Fetch the actual transcript
-  const transcriptFetch = await fetch(`https://api.soniox.com/v1/transcriptions/${transcriptId}`, {
-  headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
-});
-const transcriptContent = await transcriptFetch.json();
-console.log("Soniox FULL:", JSON.stringify(transcriptContent));
-result = transcriptContent;
-break;
+      console.log("Soniox poll status:", pollData.status);
+      if (pollData.status === 'completed') {
+        console.log("Soniox FULL:", JSON.stringify(pollData));
+        result = pollData;
+        break;
+      }
       if (pollData.status === 'failed') throw new Error("Soniox transcription failed");
     }
 
-console.log("Soniox full result:", JSON.stringify(result).slice(0, 2000));
-const words = result?._content?.words?.map(w => w.text).join(' ') 
-  || result?._content?.text 
-  || result?.text 
-  || '';
-const text = words;
-console.log("Soniox final text:", text.slice(0, 200));
-res.json({ text });
+    console.log("Soniox result keys:", Object.keys(result || {}));
+    const text = result?.text || result?.transcript || result?.words?.map(w => w.text).join(' ') || '';
+    console.log("Soniox final text:", text.slice(0, 200));
+    res.json({ text });
   } catch (err) {
     console.error("Soniox error:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
