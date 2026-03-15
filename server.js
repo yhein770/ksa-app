@@ -101,13 +101,25 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
       });
       const pollData = await pollRes.json();
  console.log("Soniox poll full:", JSON.stringify(pollData).slice(0, 300));
-if (pollData.status === 'completed') { result = pollData; break; }
+if (pollData.status === 'completed') {
+  // Fetch the actual transcript
+  const transcriptFetch = await fetch(`https://api.soniox.com/v1/transcriptions/${transcriptId}/words`, {
+    headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
+  });
+  const transcriptContent = await transcriptFetch.json();
+  console.log("Soniox words response:", JSON.stringify(transcriptContent).slice(0, 500));
+  result = { ...pollData, _content: transcriptContent };
+  break;
+}
       if (pollData.status === 'failed') throw new Error("Soniox transcription failed");
     }
 
 console.log("Soniox full result:", JSON.stringify(result).slice(0, 2000));
-const words = result?.words?.map(w => w.text).join(' ') || '';
-const text = result?.text || words || result?.result?.text || result?.transcript || '';
+const words = result?._content?.words?.map(w => w.text).join(' ') 
+  || result?._content?.text 
+  || result?.text 
+  || '';
+const text = words;
 console.log("Soniox final text:", text.slice(0, 200));
 res.json({ text });
   } catch (err) {
