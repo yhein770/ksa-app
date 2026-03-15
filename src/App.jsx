@@ -8,7 +8,7 @@ async function callClaude(user, system, max = 400) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: max,
       system,
       messages: [{ role: "user", content: user }]
@@ -457,9 +457,9 @@ async function judgeAnswer(userAnswer, correctAnswer) {
   if (variants.some(v => u === v)) return "correct";
   try {
     const raw = await callClaude(
-      `Correct answer: "${correctAnswer}"\nStudent answer: "${userAnswer}"\n\nIs the student's answer correct, close (synonymous/same meaning), or wrong? Reply with exactly one word: correct, close, or wrong.`,
-      "You are grading a Hebrew vocabulary quiz. Be generous with synonyms and paraphrases. Reply with only one word: correct, close, or wrong.",
-      20
+      `Correct answer: "${correctAnswer}"\nStudent answer: "${userAnswer}"\n\nIs the student's answer correct, close (synonymous/same meaning), or wrong? Reply with exactly one word: correct, close, or wrong.\n\nIMPORTANT: Hebrew words often have prefixes like ו (and), ב (in/with), ל (to), מ (from), ה (the). If the student included a valid prefix translation like "and morning" for "morning" or "in the house" for "house" — mark as CORRECT.`,
+"You are grading a Hebrew vocabulary quiz. Be generous with synonyms, paraphrases, and Hebrew prefix translations (ו=and, ב=in/with, ל=to, מ=from, ה=the). If the student's answer includes the core word meaning plus a valid prefix, it is correct. Reply with only one word: correct, close, or wrong.",
+     20
     );
     const verdict = raw.toLowerCase().trim();
     if (verdict.includes("correct")) return "correct";
@@ -595,8 +595,7 @@ if (quizDone) return (
     <div style={{ fontSize:48, marginBottom:10 }}>🎉</div>
     <p style={{ fontSize:20, fontWeight:600, marginBottom:6 }}>All words mastered!</p>
     <p style={{ color:C.muted, marginBottom:22 }}>Ready for the content quiz.</p>
-    <Btn bg={C.green} style={{ width:"100%", marginBottom:10 }} onClick={onDone}>Go to Content Quiz →</Btn>
-<Btn style={{ width:"100%" }} onClick={onBack}>← Back to Seif</Btn>
+<Btn bg={C.green} style={{ width:"100%", marginBottom:10 }} onClick={onDone}>Take me to Kriah →</Btn><Btn style={{ width:"100%" }} onClick={onBack}>← Back to Seif</Btn>
   </div>
 );
   const card = queue[0];
@@ -768,13 +767,15 @@ function ResultsPanel({ quiz, answers, seifIdx, onPass, onReview, onRetry }) {
   );
 }
 function SeifQuiz({ seifIdx, onPass, onReview }) {
-  const [quiz, setQuiz] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [answers, setAnswers] = useState({});
-  const [submitted, setSubmitted] = useState(false);
-  const [retryKey, setRetryKey] = useState(0);
+const [quiz, setQuiz] = useState(null);
+const [loading, setLoading] = useState(false);
+const [answers, setAnswers] = useState({});
+const [submitted, setSubmitted] = useState(false);
+const [retryKey, setRetryKey] = useState(0);
+const [started, setStarted] = useState(false);
 
-  useEffect(() => {
+useEffect(() => {
+    if (!started) return;
     const seif = SEIFIM[seifIdx];
     setQuiz(null); setLoading(true); setAnswers({}); setSubmitted(false);
     callClaude(
@@ -792,9 +793,17 @@ function SeifQuiz({ seifIdx, onPass, onReview }) {
   }
   setLoading(false);
 }).catch(() => { setQuiz([]); setLoading(false); });
-  }, [seifIdx, retryKey]);
+}, [seifIdx, retryKey, started]);
 
-  if (loading) return (
+if (!started) return (
+  <div style={{ textAlign:"center", padding:"50px 20px" }}>
+    <div style={{ fontSize:36, marginBottom:10 }}>📝</div>
+    <p style={{ fontSize:17, color:C.muted, marginBottom:22 }}>Ready to test your understanding of this seif?</p>
+    <Btn bg={C.green} onClick={() => setStarted(true)}>Generate Quiz →</Btn>
+  </div>
+);
+
+if (loading) return (
     <div style={{ textAlign:"center",padding:"60px 0",color:C.muted }}>
       <div style={{ fontSize:36,marginBottom:10 }}>🤔</div>
       <div style={{ fontSize:17 }}>Generating content quiz for סעיף {seifIdx+1}…</div>
@@ -965,9 +974,11 @@ const score = await gradeKriah(heTranscript, enTranscript, seif.he, seif.en);
   }
 
 async function gradeKriah(heTranscript, enTranscript, heText, enText) {
-  const [heResponse, enResponse] = await Promise.all([
+const heOnly = heTranscript.split(' ').filter(w => /[\u05D0-\u05EA]/.test(w)).join(' ');
+
+const [heResponse, enResponse] = await Promise.all([
     callClaude(
-`A student read this Hebrew text aloud and translated into English as they went.\n\nExpected Hebrew text: "${heText}"\nSoniox Hebrew transcript: "${heTranscript}"\n\nCount what percentage of the source Hebrew words appear in the transcript in roughly correct order. Ignore English words completely. Accept all phonetic variants without exception — different spellings of the same word are correct.\n\nScoring:\n- 90%+ of words present → score 95\n- 75-90% of words present → score 85\n- 50-75% of words present → score 70\n- Under 50% → score 40\n\nDo not go below these scores for phonetic differences. Only go below if words are genuinely absent.\n\nRespond ONLY in this exact format:\nSCORE: [0-100]\nFEEDBACK: [one encouraging sentence]`,
+`A student read this Hebrew text aloud.\n\nExpected Hebrew text: "${heText}"\nHebrew-only transcript: "${heOnly}"\n\n Count what percentage of the source Hebrew words appear in the transcript in roughly correct order. Ignore English words completely. Accept all phonetic variants without exception — different spellings of the same word are correct.\n\nScoring:\n- 90%+ of words present → score 95\n- 75-90% of words present → score 85\n- 50-75% of words present → score 70\n- Under 50% → score 40\n\nDo not go below these scores for phonetic differences. Only go below if words are genuinely absent.\n\nRespond ONLY in this exact format:\nSCORE: [0-100]\nFEEDBACK: [one encouraging sentence]`,
 "You are checking Hebrew reading coverage only. Count words present vs absent. Phonetic variants always count as correct. Use the scoring table provided exactly. Reply ONLY in the exact format specified.",
       200
     ),
@@ -985,7 +996,7 @@ const heScore = Math.min(100, heRaw + 10);
   const enScore = Math.min(100, enRaw + 10);
   const enFeedback = enResponse.match(/FEEDBACK:\s*(.+)/)?.[1] || "";
 
-return { heScore, heFeedback, enScore, enFeedback, passed: heScore >= 70 && enScore >= 70 };
+return { heScore, heFeedback, enScore, enFeedback, passed: enScore >= 70 };
 }
 
   return (
@@ -1033,18 +1044,11 @@ return { heScore, heFeedback, enScore, enFeedback, passed: heScore >= 70 && enSc
 
 {result && (
   <div style={{ background:"white",borderRadius:14,padding:"24px",boxShadow:"0 1px 4px rgba(0,0,0,.06)" }}>
-    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
-      <div style={{ textAlign:"center", padding:"14px", background:"hsl(35,30%,97%)", borderRadius:10 }}>
-        <div style={{ fontSize:11, color:C.muted, letterSpacing:1, marginBottom:4 }}>HEBREW READING</div>
-        <div style={{ fontSize:36, fontWeight:700, color:result.heScore>=70?C.green:C.red }}>{result.heScore}%</div>
-        <p style={{ fontSize:12, color:C.muted, marginTop:6, fontStyle:"italic", lineHeight:1.4 }}>{result.heFeedback}</p>
-      </div>
-      <div style={{ textAlign:"center", padding:"14px", background:"hsl(35,30%,97%)", borderRadius:10 }}>
-        <div style={{ fontSize:11, color:C.muted, letterSpacing:1, marginBottom:4 }}>ENGLISH TRANSLATION</div>
-        <div style={{ fontSize:36, fontWeight:700, color:result.enScore>=70?C.green:C.red }}>{result.enScore}%</div>
-        <p style={{ fontSize:12, color:C.muted, marginTop:6, fontStyle:"italic", lineHeight:1.4 }}>{result.enFeedback}</p>
-      </div>
-    </div>
+    <div style={{ textAlign:"center", padding:"14px", background:"hsl(35,30%,97%)", borderRadius:10, marginBottom:16 }}>
+  <div style={{ fontSize:11, color:C.muted, letterSpacing:1, marginBottom:4 }}>ENGLISH TRANSLATION</div>
+  <div style={{ fontSize:36, fontWeight:700, color:result.enScore>=70?C.green:C.red }}>{result.enScore}%</div>
+  <p style={{ fontSize:12, color:C.muted, marginTop:6, fontStyle:"italic", lineHeight:1.4 }}>{result.enFeedback}</p>
+</div>
     {result.passed ? (
       <Btn bg={C.green} style={{ width:"100%" }} onClick={onPass}>✓ Kriah Complete →</Btn>
     ) : (
@@ -1256,8 +1260,7 @@ function Reference() {
   );
 }
 // ── HOME ─────────────────────────────────────────────────────────────────────
-function Home({ student, seifProgress, onOpen, onLogout, vocab, checked, onCheck, returnToSiman, toc, activeSiman, onOpenSiman, allProgress, seifCounts }) {
-  const [simanOpen, setSimanOpen] = useState(returnToSiman);
+function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked, onCheck, returnToSiman, toc, activeSiman, onOpenSiman, allProgress, seifCounts }) {  const [simanOpen, setSimanOpen] = useState(returnToSiman);
   const [tab, setTab] = useState("study");
   const [simanSummary, setSimanSummary] = useState({});
   const [simanSearch, setSimanSearch] = useState("");
@@ -1287,15 +1290,15 @@ function Home({ student, seifProgress, onOpen, onLogout, vocab, checked, onCheck
         {/* Header */}
         <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:22 }}>
           <div>
-            <div style={{ fontSize:11,letterSpacing:4,textTransform:"uppercase",color:C.muted,marginBottom:4 }}>Judaic Studies · Fluency</div>
-            <h1 style={{ fontFamily:"'Heebo',sans-serif",fontSize:32,fontWeight:700,lineHeight:1 }}>קיצור שולחן ערוך</h1>
+           <div style={{ fontSize:11,letterSpacing:4,textTransform:"uppercase",color:C.muted,marginBottom:4 }}>KITZ · קיצור שולחן ערוך</div>
+<h1 style={{ fontFamily:"'Heebo',sans-serif",fontSize:32,fontWeight:700,lineHeight:1 }}>קיצור שולחן ערוך</h1>
           </div>
           <div style={{ textAlign:"right" }}>
             <div style={{ fontWeight:600,fontSize:15 }}>{student.name}</div>
             <div style={{ fontSize:12,color:C.muted }}>{student.email}</div>
             <div style={{ display:"flex",gap:6,justifyContent:"flex-end",marginTop:6 }}>
-              <button onClick={onLogout} style={{ background:"none",border:`1px solid ${C.border}`,borderRadius:7,padding:"3px 10px",cursor:"pointer",fontFamily:"inherit",fontSize:12,color:C.muted }}>Switch</button>
-            </div>
+<button onClick={onLogout} style={{ background:"none",border:`1px solid ${C.border}`,borderRadius:7,padding:"3px 10px",cursor:"pointer",fontFamily:"inherit",fontSize:12,color:C.muted }}>Switch</button>
+<button onClick={onBack} style={{ background:"none",border:`1px solid ${C.border}`,borderRadius:7,padding:"3px 10px",cursor:"pointer",fontFamily:"inherit",fontSize:12,color:C.muted }}>← Subjects</button>            </div>
           </div>
         </div>
 
@@ -1435,7 +1438,45 @@ function Home({ student, seifProgress, onOpen, onLogout, vocab, checked, onCheck
     </div>
   );
 }
+function SubjectSelector({ student, onSelect, onLogout }) {
+  const isTeacher = student.email === "yhein@rasg.org";
+  return (
+    <div style={{ minHeight:"100vh", background:C.bg, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
+      <style>{CSS}</style>
+      <div style={{ maxWidth:500, width:"92%", textAlign:"center" }}>
+        <div style={{ width:64, height:64, margin:"0 auto 16px" }}>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" style={{ width:"100%", height:"100%" }}>
+            <rect width="100" height="100" rx="20" fill="hsl(25,45%,33%)"/>
+            <path d="M26,23 Q26,16 33,16 L70,16 Q77,16 77,23 Q77,30 70,30 L70,50 Q70,56 65,56 Q60,56 60,50 L60,30 L33,30 Q26,30 26,23 Z" fill="hsl(45,70%,88%)"/>
+            <path d="M31,44 Q31,40 36,40 L40,40 Q45,40 45,44 L45,80 Q45,84 40,84 L36,84 Q31,84 31,80 Z" fill="hsl(45,70%,88%)"/>
+          </svg>
+        </div>
+        <h1 style={{ fontFamily:"'Heebo',sans-serif", fontSize:36, fontWeight:700, marginBottom:4 }}>KITZ</h1>
+        <p style={{ color:C.muted, fontSize:15, marginBottom:36 }}>Torah Studies Fluency</p>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:24 }}>
+          <div onClick={() => onSelect("ksa")} style={{ background:"white", borderRadius:16, padding:"28px 16px", cursor:"pointer", boxShadow:"0 2px 8px rgba(0,0,0,.08)", border:`1.5px solid ${C.border}`, transition:"all .15s" }}
+            onMouseEnter={e => e.currentTarget.style.boxShadow="0 4px 16px rgba(0,0,0,.13)"}
+            onMouseLeave={e => e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,.08)"}>
+            <div style={{ fontSize:36, marginBottom:10 }}>📖</div>
+            <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:18, fontWeight:700, marginBottom:4 }}>קיצור שולחן ערוך</div>
+            <div style={{ fontSize:13, color:C.muted }}>Kitzur Shulchan Aruch</div>
+          </div>
+          <div onClick={() => isTeacher && onSelect("talmud")} style={{ background:"white", borderRadius:16, padding:"28px 16px", cursor:isTeacher?"pointer":"default", boxShadow:"0 2px 8px rgba(0,0,0,.08)", border:`1.5px solid ${C.border}`, opacity:isTeacher?1:0.7, position:"relative", overflow:"hidden" }}
+            onMouseEnter={e => { if(isTeacher) e.currentTarget.style.boxShadow="0 4px 16px rgba(0,0,0,.13)"; }}
+            onMouseLeave={e => e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,.08)"}>
+            <div style={{ fontSize:36, marginBottom:10 }}>🕍</div>
+            <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:18, fontWeight:700, marginBottom:4 }}>תלמוד</div>
+            <div style={{ fontSize:13, color:C.muted }}>Talmud</div>
+            {!isTeacher && <div style={{ position:"absolute", bottom:0, left:0, right:0, background:"hsl(35,30%,93%)", padding:"6px", fontSize:11, color:C.muted, fontWeight:600, letterSpacing:1, textTransform:"uppercase" }}>Coming Soon</div>}
+          </div>
+        </div>
+        <div style={{ fontSize:12, color:C.muted }}>{student.name} · <button onClick={onLogout} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.muted, textDecoration:"underline" }}>Sign out</button></div>
+      </div>
+    </div>
+  );
+}
 // ── LOGIN ────────────────────────────────────────────────────────────────────
+
 function Login({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1522,8 +1563,8 @@ async function login() {
     <path d="M31,44 Q31,40 36,40 L40,40 Q45,40 45,44 L45,80 Q45,84 40,84 L36,84 Q31,84 31,80 Z" fill="hsl(45,70%,88%)"/>
   </svg>
 </div>
-        <h2 style={{ fontFamily:"'Heebo',sans-serif",fontSize:26,fontWeight:700,marginBottom:4 }}>קיצור שולחן ערוך</h2>
-        <p style={{ color:C.muted,fontSize:15,marginBottom:26 }}>Fluency Trainer</p>
+       <h2 style={{ fontFamily:"'Heebo',sans-serif",fontSize:32,fontWeight:700,marginBottom:4 }}>KITZ</h2>
+<p style={{ color:C.muted,fontSize:15,marginBottom:26 }}>Torah Studies Fluency</p>
 
         {step === "email" && <>
           <input value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && checkEmail()} placeholder="School email address" style={{ width:"100%",padding:"12px 14px",border:`1.5px solid ${C.border}`,borderRadius:9,fontFamily:"inherit",fontSize:16,marginBottom:12,textAlign:"center" }} autoFocus />
@@ -1562,6 +1603,1106 @@ async function login() {
     </div>
   );
 }
+// ════════════════════════════════════════════════════════════════
+// ── TALMUD MODULE ───────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+
+const SUGYA_DATA = {};
+
+async function loadDafText(masechet, daf) {
+  const key = `${masechet}_${daf}`;
+  if (SUGYA_DATA[key]) return SUGYA_DATA[key];
+  const cacheKey = `sefaria_talmud_${key}`;
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) { SUGYA_DATA[key] = JSON.parse(cached); return SUGYA_DATA[key]; }
+  const res = await fetch(`https://www.sefaria.org/api/texts/Berakhot.${daf}?commentary=0&context=0&pad=0`);
+  const data = await res.json();
+  const segments = (data.he || []).map((he, i) => ({
+    he: he.replace(/<[^>]*>/g, "").trim(),
+    en: (data.text[i] || "").replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim()
+  })).filter(s => s.he && s.en);
+  SUGYA_DATA[key] = segments;
+  localStorage.setItem(cacheKey, JSON.stringify(segments));
+  return segments;
+}
+
+const TALMUD_TOC = [
+  { masechet: "Berakhot", he: "ברכות", dafim: ["30b", "31a"] }
+];
+function TalmudKriah({ segment, masechet, daf, onPass }) {
+  const [recording, setRecording] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [result, setResult] = useState(null);
+  const mediaRef = useRef(null);
+  const chunksRef = useRef([]);
+
+  async function startRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    chunksRef.current = [];
+    recorder.ondataavailable = e => chunksRef.current.push(e.data);
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      setRecording(false);
+      setProcessing(true);
+      await new Promise(res => setTimeout(res, 300));
+      const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+      const enTranscript = await callWhisper(blob, "en");
+      const score = await gradeTalmudKriah(enTranscript, segment.en);
+      setResult(score);
+      setProcessing(false);
+    };
+    mediaRef.current = recorder;
+    recorder.start();
+    setRecording(true);
+  }
+
+  function stopRecording() { mediaRef.current?.stop(); }
+
+  async function gradeTalmudKriah(enTranscript, enText) {
+    const response = await callClaude(
+      `A student read an Aramaic Talmud text aloud and translated it into English as they went.\n\nExpected English translation: "${enText}"\nStudent's English transcript: "${enTranscript}"\n\nGrade ONLY the English translation accuracy. Be generous — this is an oral assessment. Award high marks if the core meaning and key concepts are conveyed. Only penalize for clearly wrong or missing concepts.\n\nCOVERAGE RULE: If the student clearly only translated part of the text, cap the score at 50%.\n\nRespond ONLY in this exact format:\nSCORE: [0-100]\nFEEDBACK: [one encouraging sentence noting what was good and what to improve]`,
+      "You are a very generous Talmud teacher grading an oral English translation of Aramaic. Grade on meaning, not exact wording. A fluent student who conveys the correct meaning should score 70%+. Reply ONLY in the exact format specified.",
+      150
+    );
+    const score = parseInt(response.match(/SCORE:\s*(\d+)/)?.[1] || 0);
+    const feedback = response.match(/FEEDBACK:\s*(.+)/)?.[1] || "";
+    return { score, feedback, passed: score >= 70 };
+  }
+
+  return (
+    <div>
+      <div style={{ background:"hsl(45,70%,93%)", border:"1px solid hsl(45,50%,75%)", borderRadius:9, padding:"9px 14px", marginBottom:14, fontSize:13, color:"hsl(35,35%,36%)" }}>
+        🎙 <strong>Kriah</strong> — Read the Aramaic aloud, translating into English as you go
+      </div>
+      <div style={{ background:"white", borderRadius:14, padding:"18px 20px", boxShadow:"0 1px 4px rgba(0,0,0,.06)", marginBottom:16, borderRight:`4px solid ${C.gold}` }}>
+        <p dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:20, lineHeight:2.4, textAlign:"right", margin:0 }}>{segment.he}</p>
+      </div>
+      {!result && !processing && (
+        <div style={{ textAlign:"center", marginTop:24 }}>
+          {!recording
+            ? <button onClick={startRecording} style={{ background:"white", color:C.muted, border:`1.5px solid ${C.border}`, borderRadius:12, padding:"12px 28px", fontSize:14, cursor:"pointer", fontFamily:"inherit", display:"inline-flex", alignItems:"center", gap:8, boxShadow:"0 1px 4px rgba(0,0,0,.06)" }}>
+                <span style={{ fontSize:18 }}>💬</span> Begin Reading
+              </button>
+            : <button onClick={stopRecording} style={{ background:"hsl(210,30%,96%)", color:"hsl(210,40%,40%)", border:`1.5px solid hsl(210,30%,82%)`, borderRadius:12, padding:"12px 28px", fontSize:14, cursor:"pointer", fontFamily:"inherit", display:"inline-flex", alignItems:"center", gap:8 }}>
+                <span style={{ fontSize:16, animation:"pulse 1.5s infinite", display:"inline-block" }}>🔵</span> Listening… tap when done
+              </button>}
+        </div>
+      )}
+      {processing && (
+        <div style={{ textAlign:"center", padding:"30px 0", display:"flex", flexDirection:"column", alignItems:"center", gap:12 }}>
+          <div style={{ width:60, height:60, animation:"kuf-pulse 1.4s ease-in-out infinite" }}>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" style={{ width:"100%", height:"100%" }}>
+              <rect width="100" height="100" rx="20" fill="hsl(25,45%,33%)"/>
+              <path style={{ animation:"kuf-draw 1.4s ease-in-out infinite" }} d="M26,23 Q26,16 33,16 L70,16 Q77,16 77,23 Q77,30 70,30 L70,50 Q70,56 65,56 Q60,56 60,50 L60,30 L33,30 Q26,30 26,23 Z" fill="hsl(45,70%,88%)"/>
+              <path style={{ animation:"kuf-draw 1.4s ease-in-out infinite 0.7s" }} d="M31,44 Q31,40 36,40 L40,40 Q45,40 45,44 L45,80 Q45,84 40,84 L36,84 Q31,84 31,80 Z" fill="hsl(45,70%,88%)"/>
+            </svg>
+          </div>
+          <p style={{ color:C.muted, fontSize:14 }}>Grading your reading…</p>
+        </div>
+      )}
+      {result && (
+        <div style={{ background:"white", borderRadius:14, padding:"24px", boxShadow:"0 1px 4px rgba(0,0,0,.06)" }}>
+          <div style={{ textAlign:"center", padding:"14px", background:"hsl(35,30%,97%)", borderRadius:10, marginBottom:16 }}>
+            <div style={{ fontSize:11, color:C.muted, letterSpacing:1, marginBottom:4 }}>ENGLISH TRANSLATION</div>
+            <div style={{ fontSize:36, fontWeight:700, color:result.score>=70?C.green:C.red }}>{result.score}%</div>
+            <p style={{ fontSize:12, color:C.muted, marginTop:6, fontStyle:"italic", lineHeight:1.4 }}>{result.feedback}</p>
+          </div>
+          {result.passed
+            ? <Btn bg={C.green} style={{ width:"100%" }} onClick={onPass}>✓ Kriah Complete →</Btn>
+            : <div>
+                <p style={{ textAlign:"center", color:C.red, fontWeight:600, marginBottom:12 }}>Need 70% to pass — keep practicing!</p>
+                <Btn style={{ width:"100%" }} onClick={() => setResult(null)}>Try Again</Btn>
+              </div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TalmudQuiz({ segment, masechet, daf, onPass, onReview }) {
+  const [quiz, setQuiz] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [answers, setAnswers] = useState({});
+  const [submitted, setSubmitted] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    if (!started) return;
+    setQuiz(null); setLoading(true); setAnswers({}); setSubmitted(false);
+    callClaude(
+      `Quiz a Modern Orthodox high school student on this Talmud segment from ${masechet} ${daf}.\n\nAramaic text: "${segment.he}"\nEnglish translation: "${segment.en}"\n\nCreate exactly 2 comprehension questions with 4 answer choices (A–D):\n- Question 1: what does this segment actually say? Test understanding of the content.\n- Question 2: what is the Talmudic argument or reasoning in this segment?\n\nBoth questions should be purely about understanding the text — no practical application.\n\nReturn ONLY valid JSON array:\n[{"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":0,"explanation":"..."},{"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":0,"explanation":"..."}]`,
+      "Return ONLY a valid JSON array. No markdown, no commentary.", 1000
+    ).then(raw => {
+      try {
+        const cleaned = raw.split("```json").join("").split("```").join("").trim();
+        setQuiz(JSON.parse(cleaned));
+      } catch { setQuiz([]); }
+      setLoading(false);
+    }).catch(() => { setQuiz([]); setLoading(false); });
+  }, [started, retryKey]);
+
+  if (!started) return (
+    <div style={{ textAlign:"center", padding:"50px 20px" }}>
+      <div style={{ fontSize:36, marginBottom:10 }}>📝</div>
+      <p style={{ fontSize:17, color:C.muted, marginBottom:22 }}>Ready to test your understanding?</p>
+      <Btn bg={C.green} onClick={() => setStarted(true)}>Generate Quiz →</Btn>
+    </div>
+  );
+
+  if (loading) return (
+    <div style={{ textAlign:"center", padding:"60px 0", color:C.muted }}>
+      <div style={{ fontSize:36, marginBottom:10 }}>🤔</div>
+      <div style={{ fontSize:17 }}>Generating quiz…</div>
+    </div>
+  );
+
+  if (!quiz?.length) return (
+    <div style={{ textAlign:"center", padding:40, color:C.red, fontSize:15 }}>
+      Could not generate quiz.{" "}
+      <button style={{ background:"none", border:"none", cursor:"pointer", color:C.brown, fontFamily:"inherit", fontSize:15, textDecoration:"underline" }} onClick={() => setRetryKey(k => k+1)}>Try again</button>
+    </div>
+  );
+
+  const score = quiz.filter((q, i) => answers[i] === parseInt(q.answer)).length;
+  const passed = submitted && score === quiz.length;
+
+  return (
+    <div>
+      <div style={{ background:"hsl(45,70%,93%)", border:"1px solid hsl(45,50%,75%)", borderRadius:10, padding:"10px 14px", marginBottom:16, fontSize:13, color:"hsl(35,35%,36%)" }}>
+        📝 <strong>Comprehension Quiz</strong> · Answer all questions correctly to master
+      </div>
+      {quiz.map((q, qi) => (
+        <div key={qi} style={{ background:"white", borderRadius:12, padding:"18px 20px", marginBottom:14, boxShadow:"0 1px 4px rgba(0,0,0,.06)" }}>
+          <p style={{ fontSize:16, fontWeight:500, marginBottom:12, lineHeight:1.55 }}>{qi+1}. {q.question}</p>
+          {q.options.map((opt, oi) => {
+            let cls = "opt";
+            if (submitted) { if (oi === parseInt(q.answer)) cls += " cor"; else if (answers[qi] === oi) cls += " wrg"; }
+            else if (answers[qi] === oi) cls += " sel";
+            return <button key={oi} className={cls} disabled={submitted} onClick={() => !submitted && setAnswers(a => ({ ...a, [qi]: oi }))}>{opt}</button>;
+          })}
+          {submitted && q.explanation && (
+            <div style={{ marginTop:8, padding:"8px 12px", background:"hsl(35,30%,97%)", borderRadius:8, fontSize:13, color:"hsl(25,20%,36%)", lineHeight:1.5 }}>💡 {q.explanation}</div>
+          )}
+        </div>
+      ))}
+      {!submitted
+        ? <Btn disabled={Object.keys(answers).length < quiz.length} bg={C.green} style={{ width:"100%" }} onClick={() => setSubmitted(true)}>Submit Answers ({Object.keys(answers).length}/{quiz.length})</Btn>
+        : passed
+          ? <div style={{ textAlign:"center", padding:"20px 0" }}>
+              <div style={{ fontSize:36, marginBottom:10 }}>🏆</div>
+              <p style={{ fontSize:18, fontWeight:600, marginBottom:16, color:C.green }}>Segment Mastered!</p>
+              <Btn bg={C.green} onClick={onPass}>Continue ›</Btn>
+            </div>
+          : <div style={{ textAlign:"center", padding:"16px 0" }}>
+              <p style={{ color:C.red, fontWeight:600, marginBottom:12 }}>Not quite — review and try again.</p>
+              <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
+                <Btn onClick={onReview}>Review Segment</Btn>
+                <Btn bg={C.gold} onClick={() => { setSubmitted(false); setAnswers({}); }}>Retry Quiz</Btn>
+              </div>
+            </div>}
+    </div>
+  );
+}
+
+function ShaklaVTarya({ segments, progress, masechet, daf }) {
+  const studiedSegments = segments.filter((_, i) => {
+    const key = `${masechet}_${daf}_${i}`;
+    return progress[key];
+  });
+  const [selectedIdx, setSelectedIdx] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const inputRef = useRef(null);
+
+  function startSession(segIdx) {
+    const seg = segments[segIdx];
+    setSelectedIdx(segIdx);
+    setMessages([{
+      role: "assistant",
+      text: `Let's learn this piece together. Here's the Aramaic:\n\n${seg.he}\n\nTell me — what's happening in this passage? What is the Gemara discussing?`
+    }]);
+  }
+
+  async function sendMessage() {
+    if (!input.trim() || loading) return;
+    const seg = segments[selectedIdx];
+    const newMessages = [...messages, { role: "user", text: input }];
+    setMessages(newMessages);
+    setInput("");
+    setLoading(true);
+    const history = newMessages.map(m => `${m.role === "user" ? "Student" : "Chavruta"}: ${m.text}`).join("\n");
+    const response = await callClaude(
+      `You are learning this Talmud segment as a chavruta with a student.\n\nAramaic text: "${seg.he}"\nEnglish translation: "${seg.en}"\n\nConversation so far:\n${history}\n\nRespond as a Talmud learning partner. Ask probing questions, push back if they're wrong, guide them to understand the shakla v'tarya (give and take) of the argument. Keep responses concise — 2-3 sentences max. If they're correct, affirm briefly and push deeper.`,
+      "You are an enthusiastic Talmud chavruta. Guide the student through the dialectic of the sugya using the Socratic method. Never just give the answer — always push the student to think. Be warm but intellectually rigorous.",
+      200
+    );
+    setMessages(m => [...m, { role: "assistant", text: response }]);
+    setLoading(false);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  if (selectedIdx === null) return (
+    <div>
+      <div style={{ background:"hsl(45,70%,93%)", border:"1px solid hsl(45,50%,75%)", borderRadius:9, padding:"9px 14px", marginBottom:16, fontSize:13, color:"hsl(35,35%,36%)" }}>
+        🤝 <strong>Shakla v'Tarya</strong> — AI chavruta for segments you've studied
+      </div>
+      {studiedSegments.length === 0 ? (
+        <div style={{ textAlign:"center", padding:"50px 20px", color:C.muted }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>🔒</div>
+          <p>Complete some segments first to unlock chavruta learning.</p>
+        </div>
+      ) : (
+        <div style={{ display:"grid", gap:10 }}>
+          {studiedSegments.map((seg, i) => {
+            const origIdx = segments.indexOf(seg);
+            return (
+              <div key={i} onClick={() => startSession(origIdx)} style={{ background:"white", borderRadius:11, padding:"13px 16px", boxShadow:"0 1px 3px rgba(0,0,0,.06)", cursor:"pointer", borderLeft:`4px solid ${C.brown}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:600, marginBottom:4 }}>Segment {origIdx + 1}</div>
+                  <p dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:13, color:C.muted }}>{seg.he.slice(0, 60)}…</p>
+                </div>
+                <span style={{ color:C.muted, fontSize:18 }}>›</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"calc(100vh - 200px)" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+        <button onClick={() => { setSelectedIdx(null); setMessages([]); }} style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, fontFamily:"inherit", fontSize:13 }}>← Back</button>
+        <span style={{ fontSize:13, color:C.muted }}>Segment {selectedIdx + 1} · Chavruta Mode</span>
+      </div>
+      <div style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column", gap:10, marginBottom:12 }}>
+        {messages.map((m, i) => (
+          <div key={i} style={{ display:"flex", justifyContent:m.role==="user"?"flex-end":"flex-start" }}>
+            <div style={{ maxWidth:"80%", background:m.role==="user"?C.brown:"white", color:m.role==="user"?"white":"hsl(25,20%,25%)", borderRadius:12, padding:"10px 14px", fontSize:14, lineHeight:1.6, boxShadow:"0 1px 3px rgba(0,0,0,.08)", whiteSpace:"pre-wrap" }}>
+              {m.text}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div style={{ display:"flex", justifyContent:"flex-start" }}>
+            <div style={{ background:"white", borderRadius:12, padding:"10px 14px", fontSize:14, color:C.muted, boxShadow:"0 1px 3px rgba(0,0,0,.08)" }}>thinking…</div>
+          </div>
+        )}
+      </div>
+      <div style={{ display:"flex", gap:8 }}>
+        <input
+          ref={inputRef}
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && sendMessage()}
+          placeholder="Respond to your chavruta…"
+          style={{ flex:1, padding:"11px 14px", border:`1.5px solid ${C.border}`, borderRadius:9, fontFamily:"'EB Garamond',serif", fontSize:15 }}
+          autoFocus
+        />
+        <Btn onClick={sendMessage} disabled={!input.trim() || loading}>Send</Btn>
+      </div>
+    </div>
+  );
+}
+
+function TalmudSegmentStudy({ segment, segIdx, daf, masechet, status, onMastered, onBack, onVocabSave, onWordMastered, segVocab, onVocabDone }) {
+  const [tab, setTab] = useState("read");
+  const [popup, setPopup] = useState(null);
+  const [vocabStage, setVocabStage] = useState("cards");
+
+  const mastered = status === "mastered";
+  const vocabDone = status === "vocab_done" || mastered;
+  const kriahDone = status === "kriah_done" || vocabDone || mastered;
+
+  useEffect(() => { setTab("read"); setVocabStage("cards"); }, [segIdx]);
+
+  function handleWord(e) {
+    e.stopPropagation();
+    const raw = e.target.innerText?.trim();
+    if (!raw || raw.length < 2) return;
+    setPopup({ he: raw, en: null, loading: true });
+    callClaude(
+      `Context (${masechet} ${daf}): "${segment.he}"\n\nTranslate the Aramaic word "${raw}" as used in this context. Reply with ONLY the English translation, 1-5 words, nothing else.`,
+      "You are a Talmud translator. Reply with ONLY the English translation. No labels, no punctuation, no explanation.", 40
+    ).then(d => {
+      const en = d.trim().replace(/^[\*\_\s]+|[\*\_\s]+$/g, "");
+      setPopup(p => p?.he === raw ? { ...p, en, loading: false } : p);
+      onVocabSave(raw, en);
+    }).catch(() => setPopup(p => p?.he === raw ? { ...p, en:"(unavailable)", loading: false } : p));
+  }
+
+  const badge = mastered
+    ? <span style={{ background:"hsl(142,40%,90%)",color:"hsl(142,40%,28%)",borderRadius:20,padding:"3px 12px",fontSize:12 }}>✓ Mastered</span>
+    : vocabDone
+    ? <span style={{ background:"hsl(210,60%,90%)",color:"hsl(210,50%,32%)",borderRadius:20,padding:"3px 12px",fontSize:12 }}>Vocab ✓ → Quiz</span>
+    : <span style={{ background:"hsl(45,70%,90%)",color:"hsl(35,50%,32%)",borderRadius:20,padding:"3px 12px",fontSize:12 }}>In Progress</span>;
+
+  return (
+    <div style={{ minHeight:"100vh", background:C.bg }} onClick={() => setPopup(null)}>
+      <style>{CSS}</style>
+      <div style={{ position:"sticky", top:0, zIndex:100, background:"hsl(35,22%,91%)", borderBottom:`1.5px solid ${C.border}` }}>
+        <div style={{ maxWidth:720, margin:"0 auto", padding:"10px 18px" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+            <button onClick={onBack} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:14, color:C.muted }}>← {masechet} {daf}</button>
+            <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:14, fontWeight:700 }}>Segment {segIdx + 1}</div>
+            {badge}
+          </div>
+          <div style={{ display:"flex", width:"100%", borderTop:`1px solid ${C.border}` }}>
+            {[
+              ["read","📖 Read"],
+              ["vocab","🃏 Vocab" + (vocabDone?" ✓":"")],
+              ["kriah","🎙 Kriah" + (kriahDone?" ✓":"")],
+              ["quiz","📝 Quiz" + (mastered?" ✓":"")]
+            ].map(([id, lbl]) => (
+              <button key={id} className={`tab${tab===id?" on":""}`} style={{ flex:1, textAlign:"center" }} onClick={e => { e.stopPropagation(); setTab(id); }}>{lbl}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth:720, margin:"0 auto", padding:"20px 18px 120px" }}>
+        {tab === "read" && (
+          <>
+            <div style={{ background:"hsl(45,70%,93%)", border:"1px solid hsl(45,50%,75%)", borderRadius:9, padding:"9px 14px", marginBottom:14, fontSize:13, color:"hsl(35,35%,36%)" }}>
+              💡 <strong>Tap a word</strong> for its translation — saved to your Vocab deck
+            </div>
+           <div style={{ background:"white", borderRadius:14, padding:"18px 20px", boxShadow:"0 1px 4px rgba(0,0,0,.06)", borderRight:`4px solid ${mastered?C.green:C.gold}` }}>
+  <p dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:20, lineHeight:2.4, textAlign:"right" }}>
+    {(() => {
+      const isHadran = /הדרן/.test(stripNikud(segment.he));
+      if (isHadran) {
+        return (
+          <span style={{ fontWeight:700 }}>
+            {segment.he.split(" ").map((w, wi) => <span key={wi}>{w} </span>)}
+          </span>
+        );
+      }
+      return segment.he.split(" ").map((w, wi) => {
+        const s = stripNikud(w);
+        const isBold = stripNikud(w).startsWith("מתני") || stripNikud(w).startsWith("גמ");
+        return (
+          <span
+            key={wi}
+            className={`ws${popup?.he === w ? " hit" : ""}`}
+            onClick={handleWord}
+            style={isBold ? { fontWeight:700 } : {}}
+          >{w} </span>
+        );
+      });
+    })()}
+  </p>
+</div>
+            {!mastered && (
+              <Btn style={{ width:"100%", marginTop:16 }} onClick={() => setTab("vocab")}>Continue to Vocab →</Btn>
+            )}
+          </>
+        )}
+
+        {tab === "vocab" && (
+  vocabStage === "typing"
+    ? <TypingQuiz
+        key={`talmud-typing-${segIdx}`}
+        seifIdx={segIdx}
+        seifVocab={segVocab || {}}
+        onWordMastered={onWordMastered}
+        onDone={() => { onVocabDone(); setVocabStage("cards"); setTab("kriah"); }}
+        onBack={() => { setVocabStage("cards"); setTab("read"); }}
+      />
+    : <SeifCards
+        key={`talmud-vocab-${segIdx}`}
+        seifIdx={segIdx}
+        seifVocab={segVocab || {}}
+        vocabCompleted={vocabDone}
+        onDone={(skipToContent) => {
+          if (skipToContent) { onVocabDone(); setTab("kriah"); }
+          else { setVocabStage("typing"); }
+        }}
+      />
+)}
+
+        {tab === "kriah" && (
+          <TalmudKriah
+            segment={segment}
+            masechet={masechet}
+            daf={daf}
+            onPass={() => { onVocabDone(); setTab("quiz"); }}
+          />
+        )}
+
+        {tab === "quiz" && (
+          !vocabDone
+            ? <div style={{ textAlign:"center", padding:"50px 0", color:C.muted }}>
+                <div style={{ fontSize:36, marginBottom:10 }}>🔒</div>
+                <p style={{ marginBottom:14 }}>Complete Vocab first to unlock the quiz.</p>
+                <Btn onClick={() => setTab("vocab")}>Go to Vocab →</Btn>
+              </div>
+            : <TalmudQuiz
+                segment={segment}
+                masechet={masechet}
+                daf={daf}
+                onPass={onMastered}
+                onReview={() => setTab("read")}
+              />
+        )}
+      </div>
+      <WordPopup popup={popup} onClose={() => setPopup(null)} />
+    </div>
+  );
+}
+
+function TalmudAnki({ anki, onUpdate }) {
+ const today = new Date().toISOString().split("T")[0];
+const NEW_CARDS_PER_DAY = 10;
+
+function getDailyNew() {
+  const saved = JSON.parse(localStorage.getItem("talmud_daily_new") || "{}");
+  if (saved.date !== today) return [];
+  return saved.cards || [];
+}
+
+function saveDailyNew(cards) {
+  localStorage.setItem("talmud_daily_new", JSON.stringify({ date: today, cards }));
+}
+
+function getQueue() {
+  const dailyNew = getDailyNew();
+  const due = [], newCards = [];
+  TALMUD_VOCAB.forEach(card => {
+    const state = anki[card.he];
+    if (!state) {
+      if (dailyNew.includes(card.he)) newCards.push(card);
+    } else if (state.dueDate <= today) due.push(card);
+  });
+  const allNew = TALMUD_VOCAB.filter(c => !anki[c.he] && !dailyNew.includes(c.he));
+  const toAdd = allNew.slice(0, Math.max(0, NEW_CARDS_PER_DAY - dailyNew.length));
+  const updatedDaily = [...dailyNew, ...toAdd.map(c => c.he)];
+  saveDailyNew(updatedDaily);
+  toAdd.forEach(c => newCards.push(c));
+  return [...due, ...newCards];
+}
+
+const [queue, setQueue] = useState(() => getQueue());
+const [revealed, setRevealed] = useState(false);
+const [filter, setFilter] = useState("all");
+const [done, setDone] = useState(false);
+
+  const filteredQueue = queue.filter(c => {
+    if (filter === "core") return c.core;
+    if (filter === "1") return c.difficulty === 1;
+    if (filter === "2") return c.difficulty === 2;
+    if (filter === "3") return c.difficulty === 3;
+    return true;
+  });
+
+  const card = filteredQueue[0];
+
+  function sm2(card, rating) {
+    const state = anki[card.he] || { interval: 0, easeFactor: 2.5, reps: 0 };
+    let { interval, easeFactor, reps } = state;
+
+    if (rating === 0) {
+      interval = 1; easeFactor = Math.max(1.3, easeFactor - 0.2); reps = 0;
+    } else if (rating === 1) {
+      interval = Math.max(1, Math.round(interval * 1.2));
+      easeFactor = Math.max(1.3, easeFactor - 0.15);
+    } else if (rating === 2) {
+      if (reps === 0) interval = 1;
+      else if (reps === 1) interval = 6;
+      else interval = Math.round(interval * easeFactor);
+      reps++;
+    } else {
+      if (reps === 0) interval = 4;
+      else if (reps === 1) interval = 6;
+      else interval = Math.round(interval * easeFactor * 1.3);
+      easeFactor = Math.min(3.0, easeFactor + 0.15);
+      reps++;
+    }
+
+    const due = new Date();
+    due.setDate(due.getDate() + interval);
+    return { interval, easeFactor, reps, dueDate: due.toISOString().split("T")[0] };
+  }
+
+  function getStreak() {
+  const saved = JSON.parse(localStorage.getItem("talmud_streak") || "{}");
+  if (!saved.lastDate) return 0;
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yStr = yesterday.toISOString().split("T")[0];
+  if (saved.lastDate === today) return saved.streak;
+  if (saved.lastDate === yStr) return saved.streak;
+  return 0;
+}
+
+function updateStreak() {
+  const saved = JSON.parse(localStorage.getItem("talmud_streak") || "{}");
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yStr = yesterday.toISOString().split("T")[0];
+  let streak = 1;
+  if (saved.lastDate === today) streak = saved.streak;
+  else if (saved.lastDate === yStr) streak = (saved.streak || 0) + 1;
+  localStorage.setItem("talmud_streak", JSON.stringify({ lastDate: today, streak }));
+  return streak;
+}
+
+  function grade(rating) {
+    const newState = sm2(card, rating);
+    onUpdate(card.he, newState);
+    const newQueue = filteredQueue.slice(1);
+    if (rating === 0) newQueue.push(card);
+    setQueue(newQueue.filter(c => {
+      if (filter === "core") return c.core;
+      if (filter === "1") return c.difficulty === 1;
+      if (filter === "2") return c.difficulty === 2;
+      if (filter === "3") return c.difficulty === 3;
+      return true;
+    }));
+    setRevealed(false);
+    if (newQueue.length === 0 && rating !== 0) setDone(true);
+  }
+
+  const diffColor = { 1:"hsl(142,44%,37%)", 2:"hsl(35,70%,45%)", 3:"hsl(0,55%,50%)" };
+  const diffBg = { 1:"hsl(142,40%,92%)", 2:"hsl(45,70%,90%)", 3:"hsl(0,60%,94%)" };
+
+  const totalDue = TALMUD_VOCAB.filter(c => {
+    const s = anki[c.he];
+    return !s || s.dueDate <= today;
+  }).length;
+  const totalMastered = TALMUD_VOCAB.filter(c => (anki[c.he]?.interval || 0) >= 21).length;
+
+if (done || filteredQueue.length === 0) {
+  const streak = updateStreak();
+  return (
+    <div style={{ textAlign:"center", padding:"60px 20px" }}>
+      <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
+      <p style={{ fontSize:20, fontWeight:600, marginBottom:16 }}>All caught up!</p>
+      <div style={{ display:"flex", justifyContent:"center", gap:12, marginBottom:20 }}>
+        <div style={{ background:"hsl(25,80%,92%)", borderRadius:12, padding:"12px 20px" }}>
+          <div style={{ fontSize:28, fontWeight:700, color:"hsl(25,60%,35%)" }}>🔥 {streak}</div>
+          <div style={{ fontSize:12, color:"hsl(25,60%,35%)" }}>day streak</div>
+        </div>
+        <div style={{ background:"hsl(142,40%,90%)", borderRadius:12, padding:"12px 20px" }}>
+          <div style={{ fontSize:28, fontWeight:700, color:"hsl(142,40%,28%)" }}>{totalMastered}</div>
+          <div style={{ fontSize:12, color:"hsl(142,40%,28%)" }}>mastered</div>
+        </div>
+        <div style={{ background:"hsl(210,60%,93%)", borderRadius:12, padding:"12px 20px" }}>
+          <div style={{ fontSize:28, fontWeight:700, color:"hsl(210,50%,35%)" }}>{TALMUD_VOCAB.filter(c => !anki[c.he]).length}</div>
+          <div style={{ fontSize:12, color:"hsl(210,50%,35%)" }}>remaining</div>
+        </div>
+      </div>
+      <p style={{ color:C.muted, fontSize:13, marginBottom:24 }}>Come back tomorrow for your next {NEW_CARDS_PER_DAY} new cards.</p>
+      <Btn onClick={() => { setQueue(getQueue()); setDone(false); setRevealed(false); }}>Review Again</Btn>
+    </div>
+  );
+}
+
+  const cardState = anki[card.he];
+  const isNew = !cardState;
+  const interval = cardState?.interval || 0;
+
+  return (
+    <div>
+      {/* Stats bar */}
+<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8, marginBottom:16 }}>
+        {[
+          ["📬 Due", totalDue, "hsl(210,60%,93%)", "hsl(210,50%,35%)"],
+          ["🆕 New", TALMUD_VOCAB.filter(c => !anki[c.he]).length, "hsl(45,70%,90%)", "hsl(35,50%,32%)"],
+          ["✓ Mastered", totalMastered, "hsl(142,40%,90%)", "hsl(142,40%,28%)"],
+          ["🔥 Streak", getStreak(), "hsl(25,80%,92%)", "hsl(25,60%,35%)"],
+        ].map(([label, val, bg, color]) => (
+          <div key={label} style={{ background:bg, borderRadius:10, padding:"10px 8px", textAlign:"center" }}>
+            <div style={{ fontSize:18, fontWeight:700, color }}>{val}</div>
+            <div style={{ fontSize:11, color, opacity:0.8 }}>{label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filter pills */}
+      <div style={{ display:"flex", gap:6, marginBottom:16, flexWrap:"wrap" }}>
+        {[["all","All"],["core","⭐ Core"],["1","Beginner"],["2","Intermediate"],["3","Advanced"]].map(([id, lbl]) => (
+          <button key={id} onClick={() => { setFilter(id); setRevealed(false); setDone(false); }}
+            style={{ background:filter===id?C.brown:"white", color:filter===id?"white":C.muted, border:`1px solid ${filter===id?C.brown:C.border}`, borderRadius:20, padding:"4px 12px", cursor:"pointer", fontFamily:"inherit", fontSize:12 }}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ height:4, background:C.border, borderRadius:2, marginBottom:16, overflow:"hidden" }}>
+        <div style={{ height:"100%", width:`${(totalMastered/TALMUD_VOCAB.length)*100}%`, background:C.green, transition:"width .4s" }}/>
+      </div>
+
+      {/* Card */}
+      <div onClick={() => !revealed && setRevealed(true)}
+        style={{ background:"white", borderRadius:16, padding:"32px 24px", minHeight:220, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", boxShadow:"0 3px 14px rgba(0,0,0,.08)", border:`1.5px solid ${C.border}`, marginBottom:16, cursor:revealed?"default":"pointer", userSelect:"none", position:"relative" }}>
+
+        {/* Badges */}
+        <div style={{ position:"absolute", top:12, left:16, display:"flex", gap:6 }}>
+          <span style={{ fontSize:11, background:diffBg[card.difficulty], color:diffColor[card.difficulty], borderRadius:20, padding:"2px 10px", fontWeight:600 }}>{card.difficultyLabel}</span>
+          {card.core && <span style={{ fontSize:11, background:"hsl(45,70%,90%)", color:"hsl(35,50%,32%)", borderRadius:20, padding:"2px 10px" }}>⭐ Core</span>}
+        </div>
+        <span style={{ position:"absolute", top:12, right:16, fontSize:11, color:C.muted }}>
+          {isNew ? "New" : `Every ${interval}d`}
+        </span>
+
+        {!revealed ? (
+          <div style={{ textAlign:"center" }}>
+            <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:42, fontWeight:700, marginBottom:8 }}>{card.he}</div>
+            <p style={{ color:C.muted, fontSize:13 }}>Tap to reveal</p>
+          </div>
+        ) : (
+          <div style={{ textAlign:"center" }}>
+            <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:32, fontWeight:700, marginBottom:16, color:C.muted }}>{card.he}</div>
+            <div style={{ fontSize:20, color:"hsl(25,20%,25%)", lineHeight:1.55, maxWidth:400 }}>{card.en}</div>
+          </div>
+        )}
+      </div>
+
+      {/* Buttons */}
+      {!revealed ? (
+        <Btn style={{ width:"100%" }} onClick={() => setRevealed(true)}>Show Answer</Btn>
+      ) : (
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8 }}>
+          {[
+            [0, "Again", "hsl(0,55%,50%)", "hsl(0,60%,96%)"],
+            [1, "Hard", "hsl(25,60%,50%)", "hsl(35,60%,94%)"],
+            [2, "Good", "hsl(210,55%,50%)", "hsl(210,60%,94%)"],
+            [3, "Easy", "hsl(142,44%,37%)", "hsl(142,40%,92%)"],
+          ].map(([rating, label, color, bg]) => (
+            <button key={rating} onClick={() => grade(rating)} style={{ background:bg, color, border:`1.5px solid ${color}`, borderRadius:11, padding:"12px 8px", cursor:"pointer", fontFamily:"'EB Garamond',serif", fontSize:15, fontWeight:600 }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <p style={{ textAlign:"center", fontSize:12, color:C.muted, marginTop:12 }}>
+        {filteredQueue.length} card{filteredQueue.length !== 1 ? "s" : ""} remaining
+      </p>
+    </div>
+  );
+}
+
+function TalmudHome({ student, onBack, onLogout, talmudProgress, onMastered, onVocabSave, onWordMastered, onVocabDone, talmudVocab, talmudAnki, onAnkiUpdate }) {  
+  const [activeMasechet, setActiveMasechet] = useState(null);
+  const [activeDaf, setActiveDaf] = useState(null);
+  const [segments, setSegments] = useState([]);
+  const [loadingDaf, setLoadingDaf] = useState(false);
+  const [activeSegIdx, setActiveSegIdx] = useState(null);
+  const [dafTab, setDafTab] = useState("segments");
+  const [homeTab, setHomeTab] = useState("learn");
+
+  async function openDaf(masechet, daf) {
+    setLoadingDaf(true);
+    setActiveMasechet(masechet);
+    setActiveDaf(daf);
+    setDafTab("segments");
+    const result = await loadDafText(masechet, daf);
+    setSegments(result);
+    setLoadingDaf(false);
+  }
+
+  if (activeSegIdx !== null && segments[activeSegIdx]) {
+    const seg = segments[activeSegIdx];
+    const key = `${activeMasechet}_${activeDaf}_${activeSegIdx}`;
+    return (
+      <TalmudSegmentStudy
+        segment={seg}
+        segIdx={activeSegIdx}
+        daf={activeDaf}
+        masechet={activeMasechet}
+        status={talmudProgress[key]}
+        onMastered={() => onMastered(key)}
+        onBack={() => setActiveSegIdx(null)}
+        onVocabSave={(he, en) => onVocabSave(key, he, en)}
+        onWordMastered={(he) => onWordMastered(key, he)}
+        segVocab={talmudVocab[key] || {}}
+        onVocabDone={() => onVocabDone(key)}
+      />
+    );
+  }
+
+  if (activeDaf && !loadingDaf) {
+    const masteredCount = segments.filter((_, i) => talmudProgress[`${activeMasechet}_${activeDaf}_${i}`] === "mastered").length;
+    return (
+      <div style={{ minHeight:"100vh", background:C.bg }}>
+        <style>{CSS}</style>
+        <div style={{ maxWidth:720, margin:"0 auto", padding:"28px 20px 80px" }}>
+          <button onClick={() => { setActiveDaf(null); setSegments([]); }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:C.muted, fontFamily:"inherit", marginBottom:16 }}>← Back</button>
+          <div style={{ background:"white", borderRadius:12, padding:"14px 18px", boxShadow:"0 1px 3px rgba(0,0,0,.06)", marginBottom:16 }}>
+            <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:22, fontWeight:700, marginBottom:4 }}>{activeMasechet} · {activeDaf}</div>
+            <div style={{ fontSize:13, color:C.muted }}>{masteredCount}/{segments.length} segments mastered</div>
+          </div>
+
+          <div style={{ display:"flex", width:"100%", borderBottom:`1.5px solid ${C.border}`, marginBottom:18 }}>
+            {[["segments","📜 Segments"],["shakla","🤝 Shakla v'Tarya"]].map(([id, lbl]) => (
+              <button key={id} className={`tab${dafTab===id?" on":""}`} onClick={() => setDafTab(id)}>{lbl}</button>
+            ))}
+          </div>
+
+          {dafTab === "segments" && (
+<div style={{ display:"flex", flexDirection:"column" }}>
+      {segments.map((seg, i) => {
+      const key = `${activeMasechet}_${activeDaf}_${i}`;
+      const st = talmudProgress[key];
+      const isMastered = st === "mastered";
+      const inProg = st && !isMastered;
+      return (
+        <div key={i} onClick={() => setActiveSegIdx(i)}
+style={{ background:"white", cursor:"pointer", borderRadius:12, boxShadow:"0 1px 4px rgba(0,0,0,.07)", display:"flex", alignItems:"flex-start", gap:12, padding:"16px 18px", transition:"all .1s", border:`1.5px solid ${isMastered?C.green:inProg?C.gold:C.border}`, marginBottom:8 }}
+onMouseEnter={e => e.currentTarget.style.background="hsl(35,30%,97%)"}
+          onMouseLeave={e => e.currentTarget.style.background="white"}>
+          <span style={{ fontSize:12, color:C.muted, minWidth:24, paddingTop:4, textAlign:"right", flexShrink:0 }}>{i+1}</span>
+<p dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:17, lineHeight:2, textAlign:"right", flex:1, margin:0, fontWeight: stripNikud(seg.he).startsWith("הדרן עלך") ? 700 : 400 }}>{seg.he}</p>
+        </div>
+      );
+    })}
+  </div>
+)}
+          {dafTab === "shakla" && (
+            <ShaklaVTarya
+              segments={segments}
+              progress={talmudProgress}
+              masechet={activeMasechet}
+              daf={activeDaf}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:C.bg }}>
+      <style>{CSS}</style>
+      <div style={{ maxWidth:720, margin:"0 auto", padding:"28px 20px 80px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:22 }}>
+          <div>
+            <div style={{ fontSize:11, letterSpacing:4, textTransform:"uppercase", color:C.muted, marginBottom:4 }}>Kitz · תלמוד</div>
+            <h1 style={{ fontFamily:"'Heebo',sans-serif", fontSize:32, fontWeight:700, lineHeight:1 }}>תלמוד בבלי</h1>
+          </div>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontWeight:600, fontSize:15 }}>{student.name}</div>
+            <div style={{ fontSize:12, color:C.muted }}>{student.email}</div>
+            <div style={{ display:"flex", gap:6, justifyContent:"flex-end", marginTop:6 }}>
+              <button onClick={onBack} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:7, padding:"3px 10px", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.muted }}>← Subjects</button>
+              <button onClick={onLogout} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:7, padding:"3px 10px", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.muted }}>Switch</button>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display:"flex", width:"100%", borderBottom:`1.5px solid ${C.border}`, marginBottom:20 }}>
+          {[["learn","📜 Learn"],["anki","TalmudKI"]].map(([id, lbl]) => (
+            <button key={id} className={`tab${homeTab===id?" on":""}`} onClick={() => setHomeTab(id)}>{lbl}</button>
+          ))}
+        </div>
+
+        {homeTab === "anki" && (
+          <TalmudAnki anki={talmudAnki} onUpdate={(he, state) => onAnkiUpdate(he, state)} />
+        )}
+
+        {homeTab === "learn" && loadingDaf && (
+          <div style={{ textAlign:"center", padding:"60px 0", display:"flex", flexDirection:"column", alignItems:"center", gap:12 }}>
+            <div style={{ width:60, height:60, animation:"kuf-pulse 1.4s ease-in-out infinite" }}>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" style={{ width:"100%", height:"100%" }}>
+                <rect width="100" height="100" rx="20" fill="hsl(25,45%,33%)"/>
+                <path style={{ animation:"kuf-draw 1.4s ease-in-out infinite" }} d="M26,23 Q26,16 33,16 L70,16 Q77,16 77,23 Q77,30 70,30 L70,50 Q70,56 65,56 Q60,56 60,50 L60,30 L33,30 Q26,30 26,23 Z" fill="hsl(45,70%,88%)"/>
+                <path style={{ animation:"kuf-draw 1.4s ease-in-out infinite 0.7s" }} d="M31,44 Q31,40 36,40 L40,40 Q45,40 45,44 L45,80 Q45,84 40,84 L36,84 Q31,84 31,80 Z" fill="hsl(45,70%,88%)"/>
+              </svg>
+            </div>
+            <p style={{ color:C.muted, fontSize:14 }}>Loading daf…</p>
+          </div>
+        )}
+
+        {homeTab === "learn" && !loadingDaf && TALMUD_TOC.map(m => (
+          <div key={m.masechet} style={{ marginBottom:24 }}>
+            <p style={{ fontSize:13, color:C.muted, marginBottom:12, letterSpacing:2, textTransform:"uppercase" }}>{m.he} · {m.masechet}</p>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(100px, 1fr))", gap:10 }}>
+              {m.dafim.map(daf => {
+                const dafMastered = Object.entries(talmudProgress)
+                  .filter(([k]) => k.startsWith(`${m.masechet}_${daf}_`))
+                  .filter(([,v]) => v === "mastered").length;
+                return (
+                  <div key={daf} onClick={() => openDaf(m.masechet, daf)}
+                    style={{ background:"white", borderRadius:12, padding:"16px 8px", textAlign:"center", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.07)", border:`1.5px solid ${dafMastered>0?C.green:C.border}` }}
+                    onMouseEnter={e => e.currentTarget.style.boxShadow="0 3px 12px rgba(0,0,0,.13)"}
+                    onMouseLeave={e => e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.07)"}>
+                    <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:18, fontWeight:700 }}>{daf}</div>
+                    {dafMastered > 0 && <div style={{ fontSize:10, color:C.green, fontWeight:600, marginTop:4 }}>✓ {dafMastered}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const TALMUD_VOCAB = [
+  { he: "לא", en: "no / not", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אין", en: "yes / indeed", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "לאו", en: "no / is it not?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אי", en: "if", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "כי", en: "because / when / like", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אלא", en: "but rather / however", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "נמי", en: "also / too", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הא", en: "this / here / but!", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מן", en: "from", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "על", en: "on / about / regarding", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "עד", en: "until / up to", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "אם", en: "if / when", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "אבל", en: "but / however", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אף", en: "even / also", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "או", en: "or", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "בין", en: "between", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "כן", en: "so / thus / yes", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "כל", en: "all / every", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מה", en: "what / how", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קא", en: "present tense marker — is [doing]", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "דהא", en: "since / because / for", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "דאי", en: "that if / for if", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "ואי", en: "and if", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "וכי", en: "and is it so? / really?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אי נמי", en: "or alternatively", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "ואף", en: "and even", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "מדי", en: "from / of it", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "בי", en: "in / with (prefix form)", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "הכא", en: "here", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "התם", en: "there", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הכי", en: "so / thus / like this", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מאי", en: "what?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "האי", en: "this (Aramaic)", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הני", en: "these (Aramaic)", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מאן", en: "who? / whoever", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "ליה", en: "to him / for him", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "לה", en: "to her / for her", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "להו", en: "to them / for them", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "ביה", en: "in it / with it", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "בה", en: "in her / with her", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "בהו", en: "in them / with them", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "מינה", en: "from it / from her", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מיניה", en: "from him", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "גביה", en: "with him / by him / near him", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קמיה", en: "before him / in his presence", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "דלא", en: "that not / without", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הכי נמי", en: "so too / likewise", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הכי קאמר", en: "this is what he means / he is saying this", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אמר", en: "said / says", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אמרי", en: "they say / it is said", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קאמר", en: "is saying / means to say", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אמר ליה", en: "said to him", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אמרינן", en: "we say / we hold", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אמרת", en: "you said / one has said", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אתא", en: "came / arrived", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אזל", en: "went / left", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "יתיב", en: "sat / was sitting", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קם", en: "stood up / arose", difficulty: 1, difficultyLabel: "Beginner", core: false },
+  { he: "בעי", en: "wants / asks / needs", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "בעינן", en: "we need / it requires", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "נפק", en: "went out / exited", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "עאל", en: "entered / went in", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "חזא", en: "saw", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "חזי", en: "sees / fitting / appropriate", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "שמע", en: "heard / listened", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "ידע", en: "knows / knew", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "שאל", en: "asked", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אתי", en: "comes / comes to", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הוי", en: "it is / becomes / is called", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הוה", en: "was / existed (past)", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הוו", en: "they were / there were", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הוה ליה", en: "he had / he should have", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קרי", en: "calls / reads / is called", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "נקט", en: "holds / takes / grasps", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "נקטינן", en: "we hold / we take as given", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "פסק", en: "ruled / decided", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "תניא", en: "it was taught — introduces a Baraita", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "תנו רבנן", en: "the Rabbis taught — introduces Baraita", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "תנא", en: "a Tanna / one who taught", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מתני", en: "our Mishnah / it was taught", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "גמרא", en: "Gemara / the Talmudic discussion", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הלכה", en: "Jewish law / the ruling", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מחלוקת", en: "dispute / disagreement", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "פליגי", en: "they disagree / dispute", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "דתניא", en: "as it was taught in a Baraita", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "דתנן", en: "as we learned in the Mishnah", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "כתיב", en: "it is written", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "דכתיב", en: "as it is written", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "שנאמר", en: "as it is said", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קרא", en: "a verse / scripture", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "סברא", en: "logical reasoning / common sense", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "משנה", en: "Mishnah", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "ברייתא", en: "Baraita — a teaching not in the Mishnah", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "תא שמע", en: "come and hear — introduces a proof", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "שמע מינה", en: "learn from this / conclude from this", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קשיא", en: "this is difficult / there is a contradiction", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "תיובתא", en: "a refutation / definitive disproof", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "היינו", en: "that is / that is the same as", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "כלומר", en: "that is to say / meaning", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "דהיינו", en: "that is / namely", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "בשלמא", en: "it is understandable / granted that", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אימא", en: "say / one might say", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "לימא", en: "let us say / shall we say", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מהו", en: "what is it? / what is the ruling?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "אלא מאי", en: "but what then? / so what do you say?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מאי קאמר", en: "what is he saying?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "הוי אמינא", en: "I would have thought", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "היכי דמי", en: "what is the case exactly? / how does this apply?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מאי טעמא", en: "what is the reason?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מנא לן", en: "from where do we know this?", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "תא חזי", en: "come and see — introduces an observation", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קא פריך", en: "he is asking / raising a difficulty", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "קא משמע לן", en: "it teaches us / comes to inform us", difficulty: 1, difficultyLabel: "Beginner", core: true },
+  { he: "מיתיבי", en: "they challenged / raised an objection from a Baraita", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מותיב", en: "he objected / he challenged", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "פריך", en: "he asks / raises a difficulty", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "משני", en: "he answers / differentiates", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אוקמה", en: "he established it / interpreted it as referring to", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "דחי", en: "he rejected / pushed aside the argument", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "תריץ", en: "answer! / resolve this difficulty", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "שני", en: "it is different / differentiate", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "קסבר", en: "he holds / maintains the view that", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "סבר", en: "he thinks / holds the opinion", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "סבירא", en: "it seems / one might think", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "פשיטא", en: "it is obvious! / of course!", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מיבעיא", en: "is there a question? / it is needed", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "קתני", en: "it teaches / the Mishnah states", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "קתני מיהת", en: "it teaches at least / it states at minimum", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "רמי", en: "he raised a contradiction / he posed a challenge", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "רמינהו", en: "let us contrast them / they contradict each other", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אוקי", en: "establish / interpret as", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מוקי", en: "he establishes / he interprets as", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מוקמינן", en: "we establish / we interpret it as", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אסיק", en: "concluded / raised / brought up", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אסיק אדעתיה", en: "it occurred to him / he realized", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "נפקא מינה", en: "the practical difference is / it matters for", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "פלוגתא", en: "a dispute / point of disagreement", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "איפלגו", en: "they disputed / they disagreed", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "תנאי היא", en: "it is a dispute among Tannaim", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "קים להו", en: "they established / they knew with certainty", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "משמע", en: "implies / we infer / it sounds like", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "טעמא", en: "the reason / the rationale", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "טעמא מאי", en: "what is the reason?", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "כיון", en: "since / because / once", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "שאני", en: "it is different / this is a special case", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "דמי", en: "resembles / is like / is comparable to", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "לא דמי", en: "it is not comparable / not similar", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "היכי", en: "how? / in what way?", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "היכא", en: "where?", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מכאן", en: "from here / from this", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אשכחן", en: "we find / we have found", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "ממאי", en: "from what? / how do we know?", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אמר קרא", en: "the verse says / Scripture states", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "תלמוד לומר", en: "the Torah teaches / Scripture comes to say", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "לא צריכא", en: "it is not needed / unnecessary to state", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "צריכא", en: "it is needed / necessary", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "איצטריך", en: "it was needed / had to be stated", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מילי", en: "matters / words / things", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "הני מילי", en: "these matters apply only when / this is only when", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מילתא", en: "a matter / a thing / a word", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מילתא דפשיטא", en: "an obvious matter", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מסתברא", en: "it is reasonable / it makes sense", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "הכי נמי מסתברא", en: "so too it is reasonable / this seems correct", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "תדע", en: "know this — introducing a proof", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מדקאמר", en: "from the fact that he said", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מדינא", en: "strictly / legally / by law", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מהיכא תיתי", en: "from where would that come? / what is the basis?", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "לא קשיא", en: "it is not difficult / there is no contradiction", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "לא קשיא כאן", en: "it is not difficult — here it refers to", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "הא מני", en: "this — whose opinion is it?", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "כמאן", en: "like whom? / according to whose opinion?", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "למאן", en: "to whom? / according to whom?", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מאן דאמר", en: "the one who says / whoever holds", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "איכא", en: "there is / there are", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "ליכא", en: "there is not / there are not", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אסור", en: "forbidden / prohibited", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מותר", en: "permitted / allowed", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "חייב", en: "obligated / liable", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "פטור", en: "exempt / not liable", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "כשר", en: "valid / fit / kosher", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "פסול", en: "invalid / disqualified", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "ספק", en: "doubt / uncertainty", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "ודאי", en: "certainly / definitely", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "בדיעבד", en: "after the fact / ex post facto", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "לכתחילה", en: "ideally / from the outset", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "דרבנן", en: "of Rabbinic origin", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "דאורייתא", en: "of Biblical / Torah origin", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "גזרה", en: "a Rabbinic decree", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "תקנה", en: "a Rabbinic enactment", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אסמכתא", en: "a Biblical support — not the primary source", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מצוה", en: "commandment / mitzvah", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "עבירה", en: "transgression / sin", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "חובה", en: "obligation / liability / duty", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מותבינן", en: "we challenge / we raise an objection", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "בטל", en: "nullified / annulled / void", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "אסיר", en: "forbidden (Aramaic form)", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "שרי", en: "permitted (Aramaic)", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "כד", en: "when / while (Aramaic)", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "כי אתא", en: "when he came", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "כי הוה", en: "when he was / when there was", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "מעיקרא", en: "originally / from the beginning / at first", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "לבסוף", en: "in the end / finally", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "בתר הכי", en: "after this / thereafter (Aramaic)", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "השתא", en: "now / at this moment", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "תדיר", en: "regularly / always / frequent", difficulty: 2, difficultyLabel: "Intermediate", core: true },
+  { he: "איבעיא להו", en: "they asked / it was asked — introduces unresolved question", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "בעי מיניה", en: "he asked him / posed the question to him", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "שקלא וטריא", en: "give and take / the back-and-forth of Talmudic debate", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "תיקו", en: "the question stands unresolved", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אכתי", en: "still / yet / even now", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אדרבה", en: "on the contrary!", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מיהו", en: "however / but / nevertheless", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מיהת", en: "at least / in any case / however", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מכל מקום", en: "in any case / nevertheless", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אף על גב", en: "even though / despite", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "לאו דוקא", en: "not precisely / not exactly", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "דוקא", en: "precisely / specifically / exactly", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "לעולם", en: "always / I will maintain — introducing a sustained position", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "בעלמא", en: "merely / just / in general / simply", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אית ליה", en: "he holds the opinion / he has this view", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "לית ליה", en: "he does not hold / he does not have this view", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "סבירא ליה", en: "he holds the opinion / he thinks", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "קא סבר", en: "he holds / maintains — present tense", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "ודחינן", en: "and we reject / we push aside", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "לעולם אימא לך", en: "I will always say to you / my position remains", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "הוה אמינא", en: "I would have thought / one might think", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "ותסברא", en: "and do you really think? / can you reason that?", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "ואזדו לטעמייהו", en: "and they follow their own reasoning / consistent with their view", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אזדא לטעמיה", en: "he follows his own reasoning / consistent with his view", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "לטעמיה", en: "according to his reasoning / following his logic", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "פירכא", en: "a logical objection / a refutation", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "הדרא קושיא לדוכתא", en: "the question returns to its place — still unanswered", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מאי הוי עלה", en: "what was the conclusion? / what happened with it?", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מי איכא", en: "is there? / does there exist?", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מי אמרינן", en: "do we say? / do we hold?", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מי סברת", en: "do you think? / do you hold?", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אי הכי", en: "if so / if that is the case", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אי הכי מאי", en: "if so, what then?", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אי לא תימא הכי", en: "if you do not say so / if you reject this", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "לא תימא", en: "do not say / do not think", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "קל וחומר", en: "a fortiori — if X then certainly Y", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "גזרה שוה", en: "verbal analogy — equal expression hermeneutical rule", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "כלל ופרט", en: "general and specific — hermeneutical rule", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "הקיש", en: "comparison / analogy drawn from juxtaposition in Torah", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "ריבוי ומיעוט", en: "inclusion and exclusion — hermeneutical rule", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "בנין אב", en: "paradigm case — establishing a rule from one case", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "חזקה", en: "presumption / established status / legal assumption", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מיגו", en: "since he could have claimed — a credibility argument", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "אומדנא", en: "assessment / inference / presumed intent", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "ברירה", en: "retroactive clarification / selection after the fact", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "מוקצה", en: "set aside / designated — item forbidden on Shabbat", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "הא בהא תליא", en: "this depends on that / they are interconnected", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "לאו הכי נמי", en: "is it not so? / is this not also the case?", difficulty: 3, difficultyLabel: "Advanced", core: true },
+  { he: "הא קא משמע לן", en: "this is what it teaches us", difficulty: 3, difficultyLabel: "Advanced", core: true },
+];
+
+
 // ── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
 const [student, setStudent]           = useState(null);
@@ -1573,7 +2714,11 @@ const [allProgress, setAllProgress]   = useState({});
 const [allVocab, setAllVocab]         = useState({});
 const [allChecked, setAllChecked]     = useState({});
 const [allScores, setAllScores]       = useState({});
+const [subject, setSubject] = useState(null);
 const [returnToSiman, setReturnToSiman] = useState(false);
+const [talmudProgress, setTalmudProgress] = useState({});
+const [talmudVocab, setTalmudVocab] = useState({});
+const [talmudAnki, setTalmudAnki] = useState({});
 const [tocLoaded, setTocLoaded]       = useState(false);
 const [toc, setToc]                   = useState([]);
 const [seifCounts, setSeifCounts] = useState(() => {
@@ -1618,10 +2763,13 @@ useEffect(() => {
       const data = await loadStudent(user.email);
       if (data) {
         setStudent(data);
-        setAllProgress(data.allProgress || {});
-        setAllVocab(data.allVocab || {});
-        setAllChecked(data.allChecked || {});
-        setAllScores(data.allScores || {});
+       setAllProgress(data.allProgress || {});
+setAllVocab(data.allVocab || {});
+setAllChecked(data.allChecked || {});
+setAllScores(data.allScores || {});
+setTalmudAnki(data.talmudAnki || {});
+setTalmudProgress(data.talmudProgress || {});
+setTalmudVocab(data.talmudVocab || {});
       }
     }
     setTocLoaded(true);
@@ -1632,10 +2780,13 @@ async function load(profile) {
   setStudent(profile);
   const data = await loadStudent(profile.email);
   if (data) {
-    setAllProgress(data.allProgress || {});
-    setAllVocab(data.allVocab || {});
-    setAllChecked(data.allChecked || {});
-    setAllScores(data.allScores || {});
+setAllProgress(data.allProgress || {});
+setAllVocab(data.allVocab || {});
+setAllChecked(data.allChecked || {});
+setAllScores(data.allScores || {});
+setTalmudAnki(data.talmudAnki || {});
+setTalmudProgress(data.talmudProgress || {});
+setTalmudVocab(data.talmudVocab || {});
   }
 }
 
@@ -1649,9 +2800,8 @@ async function load(profile) {
 
 useEffect(() => {
   if (!student) return;
-  saveTimeout(student.email, { name: student.name, email: student.email, allProgress, allVocab, allChecked, allScores });
-}, [student, allProgress, allVocab, allChecked, allScores, saveTimeout]);
-
+saveTimeout(student.email, { name: student.name, email: student.email, allProgress, allVocab, allChecked, allScores, talmudAnki, talmudProgress, talmudVocab });
+}, [student, allProgress, allVocab, allChecked, allScores, talmudAnki, talmudProgress, talmudVocab, saveTimeout]);
 function logout() {
   signOut(auth);
   setStudent(null);
@@ -1722,7 +2872,23 @@ if (!tocLoaded) return (
   </div>
 );
 if (!student) return <Login onLogin={load} />;
-  if (view === "seif") return (
+if (!subject) return <SubjectSelector student={student} onSelect={setSubject} onLogout={logout} />;
+if (subject === "talmud") return (
+  <TalmudHome
+    student={student}
+    onBack={() => setSubject(null)}
+    onLogout={logout}
+    talmudProgress={talmudProgress}
+    talmudVocab={talmudVocab}
+    onVocabSave={(key, he, en) => setTalmudVocab(v => ({ ...v, [key]: { ...(v[key]||{}), [he]: { he, en } } }))}
+    onWordMastered={(key, he) => setTalmudVocab(v => { const k = { ...(v[key]||{}) }; delete k[he]; return { ...v, [key]: k }; })}
+    onVocabDone={(key) => setTalmudProgress(p => ({ ...p, [key]: p[key] === "mastered" ? "mastered" : "vocab_done" }))}
+    onMastered={(key) => setTalmudProgress(p => ({ ...p, [key]: "mastered" }))}
+    talmudAnki={talmudAnki}
+onAnkiUpdate={(he, state) => setTalmudAnki(a => ({ ...a, [he]: state }))}
+  />
+);
+if (view === "seif") return (
  <SeifStudy
   seifIdx={activeSeif}
   activeSiman={activeSiman}
@@ -1750,7 +2916,7 @@ simanVocab={allVocab[activeSiman] || {}}
 return (
 <Home
     student={student} seifProgress={seifProgress}
-onOpen={openSeif} onLogout={logout}
+onOpen={openSeif} onLogout={logout} onBack={() => setSubject(null)}
     vocab={flatVocab} checked={vocabChecked}
     onCheck={he => setAllChecked(c => ({ ...c, [activeSiman]: { ...c[activeSiman], [he]: true }}))}
     returnToSiman={returnToSiman}

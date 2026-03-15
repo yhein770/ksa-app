@@ -10,23 +10,25 @@ app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 app.post('/api/claude', async (req, res) => {
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.VITE_ANTHROPIC_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify(req.body)
-    });
-    const data = await response.json();
-    console.log("Anthropic status:", response.status);
-    console.log("Anthropic response:", JSON.stringify(data).slice(0, 200));
-    res.json(data);
-  } catch (err) {
-    console.error("Server error:", err);
-    res.status(500).json({ error: err.message });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.VITE_ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify(req.body)
+      });
+      const data = await response.json();
+      console.log("Anthropic status:", response.status);
+      return res.json(data);
+    } catch (err) {
+      console.error(`Attempt ${attempt} failed:`, err.message);
+      if (attempt === 3) return res.status(500).json({ error: err.message });
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+    }
   }
 });
 
