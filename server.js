@@ -57,22 +57,56 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
 });
 app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
   try {
-    const response = await fetch('https://api.soniox.com/v1/transcriptions', {
+    // Step 1: Upload the file
+    const { FormData: NodeFormData } = await import('formdata-node');
+    const { Blob } = await import('buffer');
+    const form = new NodeFormData();
+    const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
+    form.set('file', blob, 'audio.webm');
+
+    const uploadRes = await fetch('https://api.soniox.com/v1/files', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` },
+      body: form
+    });
+    const uploadData = await uploadRes.json();
+    console.log("Soniox upload:", JSON.stringify(uploadData).slice(0, 200));
+    const fileId = uploadData.id;
+    if (!fileId) throw new Error("Soniox file upload failed: " + JSON.stringify(uploadData));
+
+    // Step 2: Create transcription
+    const transcriptRes = await fetch('https://api.soniox.com/v1/transcriptions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.SONIOX_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'soniox-multilingual',
-        language: 'he',
-        audio: req.file.buffer.toString('base64'),
-        audio_format: 'webm',
+        file_id: fileId,
+        model: 'stt-async-v4',
+        language_hints: ['he'],
       })
     });
-    const data = await response.json();
-    console.log("Soniox response:", JSON.stringify(data).slice(0, 200));
-    const text = data.text || data.transcript || '';
+    const transcriptData = await transcriptRes.json();
+    console.log("Soniox transcript created:", JSON.stringify(transcriptData).slice(0, 200));
+    const transcriptId = transcriptData.id;
+    if (!transcriptId) throw new Error("Soniox transcription failed: " + JSON.stringify(transcriptData));
+
+    // Step 3: Poll until complete
+    let result = null;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const pollRes = await fetch(`https://api.soniox.com/v1/transcriptions/${transcriptId}`, {
+        headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
+      });
+      const pollData = await pollRes.json();
+      console.log("Soniox poll status:", pollData.status);
+      if (pollData.status === 'completed') { result = pollData; break; }
+      if (pollData.status === 'failed') throw new Error("Soniox transcription failed");
+    }
+
+    const text = result?.text || '';
+    console.log("Soniox final text:", text.slice(0, 200));
     res.json({ text });
   } catch (err) {
     console.error("Soniox error:", err);
