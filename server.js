@@ -100,8 +100,8 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
         headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
       });
       const pollData = await pollRes.json();
-      console.log("Soniox poll status:", pollData.status);
-      if (pollData.status === 'completed') { result = pollData; break; }
+ console.log("Soniox poll full:", JSON.stringify(pollData).slice(0, 300));
+if (pollData.status === 'completed') { result = pollData; break; }
       if (pollData.status === 'failed') throw new Error("Soniox transcription failed");
     }
 
