@@ -40,8 +40,13 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
     const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
     form.set('file', blob, 'audio.webm');
     form.set('model', 'whisper-1');
+    form.set('temperature', '0');
     if (req.body.language) form.set('language', req.body.language);
-    if (req.body.prompt) form.set('prompt', req.body.prompt);
+    if (req.body.prompt) {
+      // Repeating the prompt doubles the vocabulary bias toward the expected text
+      const p = req.body.prompt;
+      form.set('prompt', req.body.language === 'he' ? `${p} ${p}` : p);
+    }
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
