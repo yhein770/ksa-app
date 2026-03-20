@@ -41,6 +41,7 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
     form.set('file', blob, 'audio.webm');
     form.set('model', 'whisper-1');
     if (req.body.language) form.set('language', req.body.language);
+    if (req.body.prompt) form.set('prompt', req.body.prompt);
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
