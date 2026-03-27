@@ -1,0 +1,14 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "sharedCache": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "flags": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    }
+  }
+}

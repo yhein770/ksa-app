@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "kitzur-app"
+    "default": "kitzur-app",
+    "kitzur-app1": "kitzur-app1"
   }
 }

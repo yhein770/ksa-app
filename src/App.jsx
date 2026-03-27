@@ -4,6 +4,35 @@ import { doc, getDoc, setDoc, collection, onSnapshot, deleteDoc } from "firebase
 import { auth } from "./firebase";
 import { TeacherLogin, TeacherDash, loadTeacher, loadClass, joinClass, ChatPanel, FeedPanel } from "./TeacherDash";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, fetchSignInMethodsForEmail, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+import { transliterateHebrew, transliterateSegment, TRANSLITERATION_SYSTEM_PROMPT } from "./transliterate";
+import { withCache, CacheKey } from "./sharedCache";
+async function lookupJastrow(heWord) {
+  const stripped = heWord.replace(/[\u0591-\u05C7]/g, "").trim();
+  if (!stripped) return null;
+  try {
+    const res = await fetch(`https://www.sefaria.org/api/words/${encodeURIComponent(stripped)}`);
+    if (!res.ok) return null;
+    const entries = await res.json();
+    if (!Array.isArray(entries)) return null;
+    const jastrow = entries.filter(e => e.parent_lexicon === "Jastrow Dictionary");
+    if (!jastrow.length) return null;
+    const defs = [];
+    for (const entry of jastrow) {
+      for (const sense of (entry.content?.senses || [])) {
+        const def = sense.definition?.replace(/<[^>]+>/g, "").trim();
+        if (def) defs.push(def);
+        for (const sub of (sense.senses || [])) {
+          const subDef = sub.definition?.replace(/<[^>]+>/g, "").trim();
+          if (subDef) defs.push(subDef);
+        }
+      }
+    }
+    return defs.length ? defs.slice(0, 3).join("; ") : null;
+  } catch {
+    return null;
+  }
+}
+
 async function callClaude(user, system, max = 400) {
   const r = await fetch("https://ksa-app-production.up.railway.app/api/claude", {
     method: "POST",
@@ -49,6 +78,9 @@ async function saveStudent(email, data) {
   } catch (e) { console.error("saveStudent error:", e); }
 }
 
+// Emails that bypass the ShaklaVTarya progression lock
+const SHAKLA_OVERRIDE_EMAILS = [];
+
 const SEIFIM_DATA = {};
 
 async function loadSimanText(simanNum) {
@@ -86,6 +118,7 @@ async function loadTOC() {
 function stripNikud(s) {
   return s.replace(/[\u0591-\u05C7]/g, "").replace(/[^\u05D0-\u05EA\s]/g, "").trim();
 }
+
 
 function toHebrewNumeral(n) {
   const hundreds = ["","ק","ר","ש","ת","תק","תר","תש","תת","תתק"];
@@ -295,23 +328,82 @@ function Btn({ children, onClick, disabled, bg, style={} }) {
 }
 
 // ── WORD POPUP ───────────────────────────────────────────────────────────────
-function WordPopup({ popup, onClose }) {
+function WordPopup({ popup, onClose, student, callClaude, onFlagResolved }) {
+  const [flagOpen, setFlagOpen] = useState(false);
+  const [flagSuggestion, setFlagSuggestion] = useState("");
+  const [flagSubmitting, setFlagSubmitting] = useState(false);
+  const [flagDone, setFlagDone] = useState(false);
+
   if (!popup) return null;
+
+  async function submitFlagInline() {
+    if (!flagSuggestion.trim() || !popup.cacheKey) return;
+    setFlagSubmitting(true);
+    try {
+      const { submitFlag } = await import("./sharedCache");
+      const result = await submitFlag({
+        cacheKey: popup.cacheKey,
+        originalValue: popup.en || "",
+        suggestedValue: flagSuggestion.trim(),
+        word: popup.he,
+        heContext: popup.heContext || "",
+        enContext: popup.enContext || "",
+        submittedBy: student?.email || "unknown",
+        claudeFn: callClaude,
+      });
+      setFlagDone(true);
+      setFlagSubmitting(false);
+      setTimeout(() => {
+        setFlagOpen(false);
+        setFlagDone(false);
+        setFlagSuggestion("");
+        if (onFlagResolved) onFlagResolved(result.finalValue);
+      }, 1500);
+    } catch (e) {
+      console.error("Flag failed:", e);
+      setFlagSubmitting(false);
+    }
+  }
+
   return (
-    <div onClick={e => e.stopPropagation()} style={{ position:"fixed",bottom:0,left:0,right:0,background:"rgba(255,255,255,.97)",borderTop:"0.5px solid rgba(0,0,0,.1)",padding:"16px 24px 32px",zIndex:300,boxShadow:"0 -8px 32px rgba(0,0,0,.1)",backdropFilter:"blur(20px)",WebkitBackdropFilter:"blur(20px)" }}>
-      <div style={{ maxWidth:700, margin:"0 auto" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-            <button onClick={onClose} style={{ background:"rgba(0,0,0,.06)",border:"none",cursor:"pointer",fontSize:15,color:C.muted,padding:"4px 10px",borderRadius:980,fontWeight:300,lineHeight:1 }}>×</button>
-            {popup.en && <span style={{ fontSize:11,background:popup.isPhrase?"rgba(52,199,89,.12)":"rgba(0,122,255,.1)",color:popup.isPhrase?"#1A5C2A":"#003D80",borderRadius:980,padding:"3px 10px",fontWeight:500,letterSpacing:"-0.01em" }}>{popup.isPhrase ? "Expression" : "Saved"}</span>}
+    <>
+      <div onClick={e => e.stopPropagation()} style={{ position:"fixed",bottom:0,left:0,right:0,background:"rgba(255,255,255,.97)",borderTop:"0.5px solid rgba(0,0,0,.1)",padding:"16px 24px 32px",zIndex:300,boxShadow:"0 -8px 32px rgba(0,0,0,.1)",backdropFilter:"blur(20px)",WebkitBackdropFilter:"blur(20px)" }}>
+        <div style={{ maxWidth:700, margin:"0 auto" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              <button onClick={onClose} style={{ background:"rgba(0,0,0,.06)",border:"none",cursor:"pointer",fontSize:15,color:C.muted,padding:"4px 10px",borderRadius:980,fontWeight:300,lineHeight:1 }}>×</button>
+              {popup.en && <span style={{ fontSize:11,background:popup.isPhrase?"rgba(52,199,89,.12)":"rgba(0,122,255,.1)",color:popup.isPhrase?"#1A5C2A":"#003D80",borderRadius:980,padding:"3px 10px",fontWeight:500,letterSpacing:"-0.01em" }}>{popup.isPhrase ? "Expression" : "Saved"}</span>}
+              <button onClick={e => { e.stopPropagation(); setFlagOpen(true); }} style={{ background:"none",border:"1px solid rgba(184,134,11,.4)",borderRadius:8,padding:"3px 9px",fontSize:11,color:"#6B4E1A",cursor:"pointer",fontFamily:"inherit" }}>✦ suggest fix</button>
+            </div>
+            <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif",fontSize:26,fontWeight:700,color:C.label }}>{popup.he}</div>
           </div>
-          <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif",fontSize:26,fontWeight:700,color:C.label }}>{popup.he}</div>
+          {popup.loading
+            ? <p style={{ color:C.muted,fontSize:15,textAlign:"center",padding:"6px 0" }}>Looking up…</p>
+            : <p style={{ fontSize:17,color:"#3A2A1E",lineHeight:1.55 }}>{popup.en}</p>}
         </div>
-        {popup.loading
-          ? <p style={{ color:C.muted,fontSize:15,textAlign:"center",padding:"6px 0" }}>Looking up…</p>
-          : <p style={{ fontSize:17,color:"#3A2A1E",lineHeight:1.55 }}>{popup.en}</p>}
       </div>
-    </div>
+      {flagOpen && (
+        <div onClick={e => { if (e.target === e.currentTarget) setFlagOpen(false); }} style={{ position:"fixed",inset:0,zIndex:400,background:"rgba(0,0,0,.5)",display:"flex",alignItems:"flex-end" }}>
+          <div onClick={e => e.stopPropagation()} style={{ width:"100%",background:"white",borderRadius:"20px 20px 0 0",padding:"24px 24px 40px" }}>
+            <div style={{ width:36,height:4,background:"rgba(0,0,0,.15)",borderRadius:2,margin:"0 auto 20px" }}/>
+            <div style={{ fontWeight:600,fontSize:17,color:"#3A2A1E",marginBottom:12 }}>Suggest a correction for <span style={{ fontFamily:"'Heebo',sans-serif" }}>{popup.he}</span></div>
+            <div style={{ background:"rgba(0,0,0,.04)",borderRadius:10,padding:"10px 14px",marginBottom:14,fontSize:15,color:"#3A2A1E" }}>{popup.en || "(none)"}</div>
+            <input
+              autoFocus
+              value={flagSuggestion}
+              onChange={e => setFlagSuggestion(e.target.value)}
+              placeholder="Your suggested translation…"
+              onKeyDown={e => { if (e.key === "Enter") submitFlagInline(); }}
+              style={{ width:"100%",border:"1px solid rgba(0,0,0,.15)",borderRadius:10,padding:"11px 14px",fontSize:15,fontFamily:"inherit",boxSizing:"border-box",outline:"none",color:"#3A2A1E" }}
+            />
+            {flagDone
+              ? <div style={{ marginTop:14,textAlign:"center",color:"#1A5C2A",fontWeight:500 }}>✓ Submitted — thank you!</div>
+              : <button onClick={submitFlagInline} disabled={!flagSuggestion.trim()||flagSubmitting} style={{ marginTop:14,width:"100%",padding:"13px",background:flagSuggestion.trim()?"rgba(184,134,11,.85)":"rgba(0,0,0,.08)",border:"none",borderRadius:12,fontFamily:"inherit",fontSize:15,fontWeight:600,color:flagSuggestion.trim()?"white":"#888",cursor:flagSuggestion.trim()?"pointer":"default" }}>{flagSubmitting?"Submitting…":"Submit correction"}</button>
+            }
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -929,6 +1021,46 @@ function FlashDeck({ vocab, checked, onCheck }) {
   );
 }
 
+function editDistance(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({length: m+1}, (_, i) => Array.from({length: n+1}, (_, j) => i===0?j:j===0?i:0));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return dp[m][n];
+}
+
+function snapToReference(heTranscript, heText) {
+  const refWords = heText.split(/\s+/).filter(Boolean);
+  const refStripped = refWords.map(w => stripNikud(w));
+  const exactMap = new Map(refStripped.map((s, i) => [s, refWords[i]]));
+  const refCounts = {};
+  refStripped.forEach(w => { refCounts[w] = (refCounts[w] || 0) + 1; });
+  const usedCounts = {};
+  const results = [];
+  for (const word of heTranscript.split(/\s+/).filter(Boolean)) {
+    if (!/[\u05D0-\u05EA]/.test(word)) continue;
+    const stripped = stripNikud(word);
+    let snapped = null;
+    if (exactMap.has(stripped)) {
+      snapped = exactMap.get(stripped);
+    } else {
+      let bestWord = null, bestDist = Infinity;
+      refStripped.forEach((ref, i) => {
+        const d = editDistance(stripped, ref);
+        if (d < bestDist) { bestDist = d; bestWord = refWords[i]; }
+      });
+      if (bestDist <= Math.max(2, Math.floor(stripped.length * 0.5))) snapped = bestWord;
+    }
+    if (!snapped) continue;
+    const snappedStripped = stripNikud(snapped);
+    const max = refCounts[snappedStripped] || 1;
+    usedCounts[snappedStripped] = (usedCounts[snappedStripped] || 0) + 1;
+    if (usedCounts[snappedStripped] <= max) results.push(snapped);
+  }
+  return results.join(" ");
+}
+
 function gradeHebrewReading(heTranscript, heText) {
   const expected = heText.split(/\s+/).map(w => stripNikud(w)).filter(Boolean);
   if (!expected.length) return 100;
@@ -958,7 +1090,7 @@ function Kriah({ seif, onPass }) {
       await new Promise(res => setTimeout(res, 300));
       const blob = new Blob(chunksRef.current, { type: "audio/webm" });
       const [enTranscript, heTranscript] = await Promise.all([
-        callWhisper(blob, "en", seif.he),
+        callWhisper(blob, "en"),
         callWhisper(blob, "he", seif.he),
       ]);
       const [score, missedRaw] = await Promise.all([
@@ -969,12 +1101,13 @@ function Kriah({ seif, onPass }) {
         ),
       ]);
       const missedPhrases = missedRaw.trim().toLowerCase() === "none" ? [] : missedRaw.trim().split("|").map(s => s.trim()).filter(Boolean);
-      const heScore = gradeHebrewReading(heTranscript, seif.he);
-      setResult({ ...score, heScore, heTranscript, missedPhrases });
+      const snappedHe = snapToReference(heTranscript, seif.he);
+      const heScore = gradeHebrewReading(snappedHe, seif.he);
+      setResult({ ...score, heScore, heTranscript: snappedHe, missedPhrases });
       setProcessing(false);
     };
     mediaRef.current = recorder;
-    recorder.start();
+    recorder.start(250);
     setRecording(true);
   }
 
@@ -1065,6 +1198,25 @@ function Kriah({ seif, onPass }) {
               <button onClick={() => setShowBreakdown(false)} style={{ background:"none",border:"none",fontSize:22,cursor:"pointer",color:C.muted,lineHeight:1 }}>×</button>
             </div>
             <div style={{ marginBottom:20 }}>
+              <div style={{ fontSize:11,color:C.muted,letterSpacing:"0.06em",textTransform:"uppercase",fontWeight:500,marginBottom:8 }}>Your Hebrew Reading</div>
+              <div dir="rtl" style={{ background:"white",borderRadius:12,padding:"14px 16px",fontSize:17,lineHeight:2,color:C.label,fontFamily:"'Heebo',sans-serif",textAlign:"right" }}>{(() => { const detected = new Set((result.heTranscript || "").split(/\s+/).map(w => stripNikud(w)).filter(Boolean)); return seif.he.split(/\s+/).filter(w => detected.has(stripNikud(w))).join(" ") || "—"; })()}</div>
+            </div>
+            <div style={{ marginBottom:20 }}>
+              <div style={{ fontSize:11,color:C.muted,letterSpacing:"0.06em",textTransform:"uppercase",fontWeight:500,marginBottom:8 }}>Reference Hebrew</div>
+              <div dir="rtl" style={{ background:"white",borderRadius:12,padding:"14px 16px",fontSize:17,lineHeight:2,color:C.label,fontFamily:"'Heebo',sans-serif",textAlign:"right" }}>
+                {(() => {
+                  const gotWords = new Set((result.heTranscript || "").split(/\s+/).map(w => stripNikud(w)).filter(Boolean));
+                  return seif.he.split(/\s+/).map((w, i) => {
+                    const missed = !gotWords.has(stripNikud(w));
+                    return missed
+                      ? <mark key={i} style={{ background:"rgba(255,59,48,.15)",color:"#C0392B",borderRadius:3,padding:"0 2px" }}>{w} </mark>
+                      : <span key={i}>{w} </span>;
+                  });
+                })()}
+              </div>
+            </div>
+            <div style={{ height:1,background:C.border,marginBottom:20 }} />
+            <div style={{ marginBottom:20 }}>
               <div style={{ fontSize:11,color:C.muted,letterSpacing:"0.06em",textTransform:"uppercase",fontWeight:500,marginBottom:8 }}>Your Translation</div>
               <div style={{ background:"white",borderRadius:12,padding:"14px 16px",fontSize:15,lineHeight:1.8,color:C.label }}>{result.transcript || "—"}</div>
             </div>
@@ -1084,6 +1236,9 @@ function Kriah({ seif, onPass }) {
                 })()}
               </div>
             </div>
+            <div style={{ marginTop:20,padding:"10px 14px",background:"rgba(0,0,0,.03)",borderRadius:10 }}>
+              <p style={{ margin:0,fontSize:11,color:C.muted,lineHeight:1.5 }}>Grading uses AI and may occasionally flag errors that aren't there. Use your own judgment.</p>
+            </div>
           </div>
         </div>
       )}
@@ -1092,7 +1247,7 @@ function Kriah({ seif, onPass }) {
 }
 
 // ── SEIF STUDY VIEW ──────────────────────────────────────────────────────────
-function SeifStudy({ seifIdx, activeSiman, status, onMastered, onBack, onVocabSave, onWordMastered, simanVocab, onVocabDone, onKriahDone, quizScores, onQuizScore, onNext }) {
+function SeifStudy({ seifIdx, activeSiman, status, onMastered, onBack, onVocabSave, onWordMastered, simanVocab, onVocabDone, onKriahDone, quizScores, onQuizScore, onNext, student }) {
   const [tab, setTab] = useState("read");
   const [vocabStage, setVocabStage] = useState("init");
   const [popup, setPopup] = useState(null);
@@ -1163,17 +1318,18 @@ if (tapIdx2 >= 0) {
     }
   }
 }
-    setPopup({ he:raw, en:null, loading:true });
-callClaude(
-  `Hebrew text: "${seif.he}"\nEnglish translation: "${seif.en}"\nTapped Hebrew word: "${raw}"\n\nFind the English word or short phrase in the translation that corresponds to "${raw}". Reply with ONLY that word or phrase — nothing else.`,
-  "You are identifying which part of an English translation corresponds to a specific Hebrew word. Reply with ONLY the corresponding English word or phrase. No explanation, no context, no punctuation.", 20
-)
-    .then(d => {
+    const ck = CacheKey.ksaWord(activeSiman, seifIdx, raw);
+    setPopup({ he:raw, en:null, loading:true, cacheKey: ck, heContext: seif.he, enContext: seif.en });
+withCache(ck, () =>
+  callClaude(
+    `Hebrew text: "${seif.he}"\nEnglish translation: "${seif.en}"\nTapped Hebrew word: "${raw}"\n\nFind the English word or short phrase in the translation that corresponds to "${raw}". Reply with ONLY that word or phrase — nothing else.`,
+    "You are identifying which part of an English translation corresponds to a specific Hebrew word. Reply with ONLY the corresponding English word or phrase. No explanation, no context, no punctuation.", 20
+  )
+).then(d => {
   const en = d.trim().replace(/^[\*\_\s]+|[\*\_\s]+$/g, "");
   setPopup(p => p?.he === raw ? { ...p, he: raw, en, loading:false } : p);
   if (isDoubleTap) onVocabSave(raw, en, ctx);
-})
-    .catch(() => setPopup(p => p?.he === raw ? { ...p, en:"(translation unavailable)", loading:false } : p));
+}).catch(() => setPopup(p => p?.he === raw ? { ...p, en:"(translation unavailable)", loading:false } : p));
   }
 
 const hasVocab = Object.keys(seifVocab).length > 0;
@@ -1295,7 +1451,7 @@ onBack={() => { setVocabStage("cards"); setTab("read"); }}
               />
         )}
       </div>
-      <WordPopup popup={popup} onClose={() => setPopup(null)} />
+      <WordPopup popup={popup} onClose={() => setPopup(null)} student={student} callClaude={callClaude} onFlagResolved={val => setPopup(p => p ? { ...p, en: val } : null)} />
     </div>
   );
 }
@@ -1340,16 +1496,14 @@ function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked,
 
   useEffect(() => {
     if (!activeSiman || simanSummary[activeSiman] || SEIFIM.length === 0) return;
-    const cacheKey = `summary_${activeSiman}`;
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) { setSimanSummary(s => ({ ...s, [activeSiman]: cached })); return; }
     const preview = SEIFIM.slice(0, 3).map((sf, i) => `Seif ${i+1}: ${sf.en}`).join("\n");
-    callClaude(
-      `Based on these seifim from Kitzur Shulchan Aruch Siman ${activeSiman}:\n${preview}\n\nWrite a single sentence (max 20 words) summarizing what this siman is about.`,
-      "Reply with ONE sentence only. No preamble.", 80
+    withCache(CacheKey.ksaSummary(activeSiman), () =>
+      callClaude(
+        `Based on these seifim from Kitzur Shulchan Aruch Siman ${activeSiman}:\n${preview}\n\nWrite a single sentence (max 20 words) summarizing what this siman is about.`,
+        "Reply with ONE sentence only. No preamble.", 80
+      )
     ).then(r => {
-      localStorage.setItem(cacheKey, r.trim());
-      setSimanSummary(s => ({ ...s, [activeSiman]: r.trim() }));
+      if (r) setSimanSummary(s => ({ ...s, [activeSiman]: r }));
     });
   }, [activeSiman, SEIFIM.length]);
 
@@ -1520,9 +1674,10 @@ const unlocked = true;                  const isMastered = st === "mastered";
 }
 // ── CLASSROOM VIEW ───────────────────────────────────────────────────────────
 
-function ClassroomView({ studentClass, student, allProgress, talmudProgress, seifCounts, onBack, onStudyKSA, onStudyTalmud }) {
+function ClassroomView({ studentClass, student, allProgress, talmudProgress, seifCounts, onBack, onStudyKSA, onStudyTalmud, selectedAssignment, onSelectAssignment }) {
   const [tab, setTab] = useState("assignments");
-  const [selectedAssignment, setSelectedAssignment] = useState(null);
+  const setSelectedAssignment = onSelectAssignment;
+  const [assignmentCount, setAssignmentCount] = useState(0);
 
   function getSimanColor(simanNum) {
     const sp = allProgress[simanNum] || {};
@@ -1576,7 +1731,12 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
         {/* Tabs */}
         <div style={{ display:"flex", gap:4, marginBottom:24, background:"rgba(0,0,0,.05)", borderRadius:12, padding:4 }}>
           {[["assignments","Assignments"], ["feed","Feed"], ["chat","Chat"]].map(([id, lbl]) => (
-            <button key={id} onClick={() => { setTab(id); setSelectedAssignment(null); }} style={{ flex:1, padding:"8px 4px", borderRadius:9, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:500, background:tab===id?"white":"transparent", color:tab===id?C.label:C.muted, boxShadow:tab===id?"0 1px 3px rgba(0,0,0,.08)":"none", transition:"all .15s" }}>{lbl}</button>
+            <button key={id} onClick={() => { setTab(id); setSelectedAssignment(null); }} style={{ flex:1, padding:"8px 4px", borderRadius:9, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:500, background:tab===id?"white":"transparent", color:tab===id?C.label:C.muted, boxShadow:tab===id?"0 1px 3px rgba(0,0,0,.08)":"none", transition:"all .15s", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+              {lbl}
+              {id === "assignments" && assignmentCount > 0 && (
+                <span style={{ background: tab==="assignments" ? C.brown : "rgba(92,51,23,.15)", color: tab==="assignments" ? "white" : C.brown, borderRadius:99, fontSize:10, fontWeight:700, padding:"1px 6px", lineHeight:"16px" }}>{assignmentCount}</span>
+              )}
+            </button>
           ))}
         </div>
 
@@ -1585,6 +1745,34 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
           selectedAssignment ? (
             <div>
               <button onClick={() => setSelectedAssignment(null)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:C.brown, fontFamily:"inherit", marginBottom:20, padding:0, fontWeight:500 }}>‹ Back to Assignments</button>
+              {(() => {
+                const ad = selectedAssignment.assignmentData;
+                const ksaDone = !ad?.ksa || (ad.ksa.all ? false : (ad.ksa.simanim || []).every(num => {
+                  const seifs = allProgress?.[num] || {};
+                  return Object.values(seifs).length > 0 && Object.values(seifs).every(v => v === "mastered");
+                }));
+                const talmudDone = !ad?.talmud?.masechet || (() => {
+                  const t = ad.talmud;
+                  if (!t.fromSeg || !t.toSeg) return false;
+                  for (let i = t.fromSeg - 1; i <= t.toSeg - 1; i++) {
+                    const st = talmudProgress?.[`${t.masechet}_${t.daf}_${i}`];
+                    if (!st?.kriah || !st?.quiz) return false;
+                  }
+                  return true;
+                })();
+                const isComplete = ksaDone && talmudDone && (ad?.ksa || ad?.talmud);
+                return isComplete ? (
+                  <div style={{ background:"rgba(52,199,89,.1)", border:"1.5px solid rgba(52,199,89,.3)", borderRadius:14, padding:"16px 18px", marginBottom:16, display:"flex", alignItems:"center", gap:12 }}>
+                    <div style={{ width:36, height:36, borderRadius:"50%", background:C.green, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </div>
+                    <div>
+                      <div style={{ fontWeight:700, fontSize:15, color:"#1A7A3A" }}>Assignment Complete!</div>
+                      <div style={{ fontSize:12, color:"#2D9A4E", marginTop:2 }}>You've finished all assigned material.</div>
+                    </div>
+                  </div>
+                ) : null;
+              })()}
               <div style={{ background:"white", borderRadius:16, padding:"18px 20px", marginBottom:22, boxShadow:"0 1px 4px rgba(0,0,0,.05)" }}>
                 <div style={{ fontWeight:700, fontSize:20, color:C.label, marginBottom:4 }}>{selectedAssignment.title}</div>
                 {selectedAssignment.dueDate && (
@@ -1616,31 +1804,28 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
                   </div>
                 </div>
               )}
-              {/* Talmud masechtos */}
-              {selectedAssignment.assignmentData?.talmud?.masechtos && (
-                <div style={{ marginBottom:28 }}>
-                  <div style={{ fontWeight:700, fontSize:16, color:C.label, marginBottom:4 }}>תלמוד</div>
-                  <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{selectedAssignment.assignmentData.talmud.masechtos.join(" · ")}</div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))", gap:10 }}>
-                    {selectedAssignment.assignmentData.talmud.masechtos.map(m => {
-                      const tocEntry = TALMUD_TOC.find(t => t.masechet === m);
-                      const { mastered, started } = getMasechetProgress(m);
-                      return (
-                        <div key={m} onClick={() => onStudyTalmud(m)}
-                          onMouseEnter={e => e.currentTarget.style.boxShadow="0 3px 12px rgba(0,0,0,.13)"}
-                          onMouseLeave={e => e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.07)"}
-                          style={{ background:"white", borderRadius:14, padding:"18px 12px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04)", textAlign:"center", borderTop:`3px solid ${mastered>0?"rgba(52,199,89,.5)":"transparent"}` }}>
-                          <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:22, fontWeight:700, marginBottom:4, color:C.label }}>{tocEntry?.he || m}</div>
-                          <div style={{ fontSize:12, color:C.muted }}>{m}</div>
-                          {(mastered > 0 || started > 0) && (
-                            <div style={{ fontSize:11, color:mastered>0?C.green:C.gold, marginTop:6, fontWeight:500 }}>{mastered} mastered{started > mastered ? ` · ${started-mastered} in progress` : ""}</div>
-                          )}
-                        </div>
-                      );
-                    })}
+              {/* Talmud assignment */}
+              {selectedAssignment.assignmentData?.talmud?.masechet && (() => {
+                const t = selectedAssignment.assignmentData.talmud;
+                const tocEntry = TALMUD_TOC.find(x => x.masechet === t.masechet);
+                const segLabel = t.fromSeg ? (t.toSeg ? `Segments ${t.fromSeg}–${t.toSeg}` : `From segment ${t.fromSeg}`) : "All segments";
+                return (
+                  <div style={{ marginBottom:28 }}>
+                    <div style={{ fontWeight:700, fontSize:16, color:C.label, marginBottom:4 }}>תלמוד</div>
+                    <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{t.masechet} · {t.daf} · {segLabel}</div>
+                    <div onClick={() => onStudyTalmud(t.masechet, t.daf, t.fromSeg, t.toSeg, studentClass.progressionLocked)}
+                      onMouseEnter={e => e.currentTarget.style.boxShadow="0 3px 12px rgba(0,0,0,.13)"}
+                      onMouseLeave={e => e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.07)"}
+                      style={{ background:"white", borderRadius:14, padding:"20px 18px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04)", display:"flex", alignItems:"center", gap:16 }}>
+                      <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:28, fontWeight:700, color:C.label }}>{tocEntry?.he || t.masechet}</div>
+                      <div>
+                        <div style={{ fontWeight:600, fontSize:15, color:C.label }}>{t.masechet}</div>
+                        <div style={{ fontSize:13, color:C.muted }}>{t.daf} · {segLabel}</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
           ) : (
             <FeedPanel
@@ -1649,6 +1834,9 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
               currentUser={student}
               filterType="assignment"
               onSelectAssignment={setSelectedAssignment}
+              onCountChange={setAssignmentCount}
+              allProgress={allProgress}
+              talmudProgress={talmudProgress}
             />
           )
         )}
@@ -2018,7 +2206,7 @@ const TALMUD_TOC = [
   // Seder Taharot
   { masechet: "Niddah",        he: "נדה",        dafim: makeDafim(2, 73) },
 ];
-function TalmudKriah({ segment, masechet, daf, onPass }) {
+function TalmudKriah({ segment, masechet, daf, onPass, segVocab }) {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [result, setResult] = useState(null);
@@ -2037,11 +2225,11 @@ function TalmudKriah({ segment, masechet, daf, onPass }) {
       setProcessing(true);
       await new Promise(res => setTimeout(res, 300));
       const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+      const enText = segment.enBold || segment.en;
       const [enTranscript, heTranscript] = await Promise.all([
-        callWhisper(blob, "en", segment.he),
+        callWhisper(blob, "en"),
         callWhisper(blob, "he", segment.he),
       ]);
-      const enText = segment.enBold || segment.en;
       const [score, missedRaw] = await Promise.all([
         gradeTalmudKriah(enTranscript, enText),
         callClaude(
@@ -2050,27 +2238,32 @@ function TalmudKriah({ segment, masechet, daf, onPass }) {
         ),
       ]);
       const missedPhrases = missedRaw.trim().toLowerCase() === "none" ? [] : missedRaw.trim().split("|").map(s => s.trim()).filter(Boolean);
-      const heScore = gradeHebrewReading(heTranscript, segment.he);
-      setResult({ ...score, heScore, heTranscript, missedPhrases });
+      const snappedHe = snapToReference(heTranscript, segment.he);
+      const heScore = gradeHebrewReading(snappedHe, segment.he);
+      setResult({ ...score, heScore, heTranscript: snappedHe, missedPhrases });
       setProcessing(false);
     };
     mediaRef.current = recorder;
-    recorder.start();
+    recorder.start(250);
     setRecording(true);
   }
 
   function stopRecording() { mediaRef.current?.stop(); }
 
  async function gradeTalmudKriah(enTranscript, enText) {
+  const vocabEntries = Object.entries(segVocab || {});
+  const vocabHint = vocabEntries.length > 0
+    ? `\n\nWord translations the student studied:\n${vocabEntries.map(([he, en]) => `${he} = ${en}`).join("\n")}`
+    : "";
   const response = await callClaude(
-`You are grading a student's oral translation of an Aramaic/Hebrew text.\n\nReference (Sefaria bold translation): "${enText}"\nStudent's transcript: "${enTranscript}"\n\nThe student read Aramaic/Hebrew aloud and translated phrase by phrase. Their transcript may include Hebrew/Aramaic terms — these count as valid translations of those words, not missing words.\n\nFor each meaningful concept in the reference, mark it MATCHED if the student conveyed that meaning in any form: same word, synonym, paraphrase, or the original Hebrew/Aramaic term. Only mark MISSING if the concept is clearly absent from the transcript.\n\nExamples of what always counts as matched:\n- reference "said" / student says "told" or "spoke" → MATCHED\n- reference "priest" / student says "Kohen" → MATCHED\n- reference "went" / student says "walked" or "traveled" → MATCHED\n- reference "as it is written" / student says "as it says" → MATCHED\n\nCount concepts, not individual words. Last line must be exactly: MATCHED: X OUT OF Y`,
-"You are grading translation coverage. Hebrew/Aramaic terms in the student transcript count as valid translations. Synonyms and paraphrases always match. Reply in the exact format shown.");
+`You are grading a student's oral translation of an Aramaic/Hebrew text. Be generous — the goal is to reward understanding, not penalize imperfect wording.\n\nReference (Sefaria translation): "${enText}"${vocabHint}\n\nStudent's transcript: "${enTranscript}"\n\nThe student read Aramaic/Hebrew aloud and translated phrase by phrase. Grade based on whether they demonstrated understanding of the meaning, using the Sefaria translation and studied word list above as the standard.\n\nMATCHED if the student:\n- Used the studied translation of a word (or the Hebrew/Aramaic word itself)\n- Conveyed the same meaning with any synonym or close paraphrase\n- Got the gist of a phrase even if wording differs\n\nMISSING only if the concept is clearly completely absent.\n\nExamples:\n- reference "priests" / student says "Kohanim" or "kohen" → MATCHED\n- reference "from when" / student says "when" or "starting when" → MATCHED\n- reference "recite the Shema" / student says "say Shema" → MATCHED\n- reference "enters to eat" / student says "goes in to eat" → MATCHED\n\nCount concepts, not words. Last line must be exactly: MATCHED: X OUT OF Y`,
+"You are grading translation coverage. Be generous — reward understanding. Hebrew/Aramaic terms always count. Reply in the exact format shown.");
 
 const matchLine = response.match(/MATCHED:\s*(\d+)\s*OUT OF\s*(\d+)/i);
 const matched = matchLine ? parseInt(matchLine[1]) : 0;
 const total = matchLine ? parseInt(matchLine[2]) : 1;
 const enRaw = total > 0 ? Math.round((matched / total) * 100) : 0;
-const enScore = Math.min(100, enRaw + 10);
+const enScore = Math.min(100, enRaw + 15);
 const feedback = enScore === 100 ? "Perfect! You covered every concept." : enScore >= 90 ? "Excellent — nearly every concept covered." : enScore >= 80 ? "Great work — strong coverage overall." : enScore >= 70 ? "Good — a few concepts missed but you got the core." : "Keep practicing — try to translate each phrase as you go.";
 return { score: enScore, feedback, passed: enScore >= 70, transcript: enTranscript };
 }
@@ -2146,6 +2339,25 @@ return { score: enScore, feedback, passed: enScore >= 70, transcript: enTranscri
               <button onClick={() => setShowBreakdown(false)} style={{ background:"none",border:"none",fontSize:22,cursor:"pointer",color:C.muted,lineHeight:1 }}>×</button>
             </div>
             <div style={{ marginBottom:20 }}>
+              <div style={{ fontSize:11,color:C.muted,letterSpacing:"0.06em",textTransform:"uppercase",fontWeight:500,marginBottom:8 }}>Your Hebrew Reading</div>
+              <div dir="rtl" style={{ background:"white",borderRadius:12,padding:"14px 16px",fontSize:17,lineHeight:2,color:C.label,fontFamily:"'Heebo',sans-serif",textAlign:"right" }}>{(() => { const detected = new Set((result.heTranscript || "").split(/\s+/).map(w => stripNikud(w)).filter(Boolean)); return segment.he.split(/\s+/).filter(w => detected.has(stripNikud(w))).join(" ") || "—"; })()}</div>
+            </div>
+            <div style={{ marginBottom:20 }}>
+              <div style={{ fontSize:11,color:C.muted,letterSpacing:"0.06em",textTransform:"uppercase",fontWeight:500,marginBottom:8 }}>Reference Hebrew</div>
+              <div dir="rtl" style={{ background:"white",borderRadius:12,padding:"14px 16px",fontSize:17,lineHeight:2,color:C.label,fontFamily:"'Heebo',sans-serif",textAlign:"right" }}>
+                {(() => {
+                  const gotWords = new Set((result.heTranscript || "").split(/\s+/).map(w => stripNikud(w)).filter(Boolean));
+                  return segment.he.split(/\s+/).map((w, i) => {
+                    const missed = !gotWords.has(stripNikud(w));
+                    return missed
+                      ? <mark key={i} style={{ background:"rgba(255,59,48,.15)",color:"#C0392B",borderRadius:3,padding:"0 2px" }}>{w} </mark>
+                      : <span key={i}>{w} </span>;
+                  });
+                })()}
+              </div>
+            </div>
+            <div style={{ height:1,background:C.border,marginBottom:20 }} />
+            <div style={{ marginBottom:20 }}>
               <div style={{ fontSize:11,color:C.muted,letterSpacing:"0.06em",textTransform:"uppercase",fontWeight:500,marginBottom:8 }}>Your Translation</div>
               <div style={{ background:"white",borderRadius:12,padding:"14px 16px",fontSize:15,lineHeight:1.8,color:C.label }}>{result.transcript || "—"}</div>
             </div>
@@ -2172,6 +2384,9 @@ return { score: enScore, feedback, passed: enScore >= 70, transcript: enTranscri
                   );
                 })()}
               </div>
+            </div>
+            <div style={{ marginTop:20,padding:"10px 14px",background:"rgba(0,0,0,.03)",borderRadius:10 }}>
+              <p style={{ margin:0,fontSize:11,color:C.muted,lineHeight:1.5 }}>Grading uses AI and may occasionally flag errors that aren't there. Use your own judgment.</p>
             </div>
           </div>
         </div>
@@ -2336,12 +2551,9 @@ function TalmudQuiz({ segment, masechet, daf, onPass, onReview, onBack, onNext }
   );
 }
 
-function ShaklaVTarya({ segments, progress, masechet, daf }) {
-  const studiedSegments = segments.filter((_, i) => {
-    const key = `${masechet}_${daf}_${i}`;
-    const st = progress[key];
-    return st?.kriah && st?.quiz;
-  });
+function ShaklaVTarya({ segments, masechet, daf, student }) {
+  const [startFrom, setStartFrom] = useState(0);
+  const studiedSegments = segments.slice(startFrom);
 
 const [messages, setMessages] = useState([]);
 const [input, setInput] = useState("");
@@ -2410,26 +2622,35 @@ setLoading(false);
 setTimeout(() => inputRef.current?.focus(), 50);
   }
 
-  if (studiedSegments.length === 0) return (
+  if (segments.length === 0) return (
     <div style={{ textAlign:"center", padding:"50px 20px", color:C.muted }}>
-      <div style={{ width:48,height:48,background:"rgba(0,0,0,.06)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px" }}>
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={C.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-      </div>
-      <p>Complete some segments first to unlock chavruta learning.</p>
+      <p>No segments loaded yet.</p>
     </div>
   );
 
   if (!started) return (
-    <div style={{ textAlign:"center", padding:"40px 20px" }}>
-      <div style={{ background:"rgba(180,130,60,.08)",borderRadius:10,padding:"10px 14px",marginBottom:20,fontSize:13,color:"#6B4E1A",textAlign:"left",fontWeight:500 }}>
-        Shakla v'Tarya — Chavruta covering {studiedSegments.length} studied segment{studiedSegments.length > 1 ? "s" : ""}
+    <div style={{ padding:"24px 0" }}>
+      <div style={{ background:"rgba(180,130,60,.08)",borderRadius:10,padding:"10px 14px",marginBottom:20,fontSize:13,color:"#6B4E1A",fontWeight:500 }}>
+        Shakla v'Tarya — Chavruta
+      </div>
+      <div style={{ marginBottom:16 }}>
+        <div style={{ fontSize:13, color:C.muted, marginBottom:8, fontWeight:500 }}>Start from segment:</div>
+        <div style={{ display:"flex", flexDirection:"column", gap:6, maxHeight:260, overflowY:"auto", paddingRight:2 }}>
+          {segments.map((seg, i) => (
+            <button key={i} onClick={() => setStartFrom(i)}
+              style={{ textAlign:"right", background: startFrom===i ? "rgba(180,130,60,.12)" : "white", border: `1px solid ${startFrom===i ? C.brown : C.border}`, borderRadius:10, padding:"10px 14px", cursor:"pointer", fontFamily:"'Heebo',sans-serif", fontSize:15, lineHeight:1.6, color: startFrom===i ? "#6B4E1A" : C.label, display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ fontSize:12, color:C.muted, minWidth:20, textAlign:"left", flexShrink:0 }}>{i+1}</span>
+              <span dir="rtl" style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{seg.he.split(" ").slice(0,8).join(" ")}</span>
+            </button>
+          ))}
+        </div>
       </div>
       <Btn bg={C.brown} onClick={startSession}>Begin Chavruta</Btn>
     </div>
   );
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", height:"calc(100vh - 240px)" }}>
+    <div style={{ display:"flex", flexDirection:"column", height:"calc(100dvh - 300px - env(safe-area-inset-bottom, 0px))" }}>
 <div ref={messagesEndRef => { if (messagesEndRef) messagesEndRef.scrollTop = messagesEndRef.scrollHeight; }} style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column", gap:10, marginBottom:12 }}>        {messages.map((m, i) => (
   <div key={i} style={{ display:"flex", justifyContent:m.role==="user"?"flex-end":"flex-start" }}>
     <div style={{ maxWidth:"80%", background:m.role==="user"?C.brown:"white", color:m.role==="user"?"white":C.label, borderRadius:m.role==="user"?"18px 18px 4px 18px":"18px 18px 18px 4px", padding:"10px 14px", fontSize:14, lineHeight:1.6, boxShadow:"0 1px 4px rgba(0,0,0,.07),0 2px 8px rgba(0,0,0,.04)", whiteSpace:"pre-wrap" }}>
@@ -2470,7 +2691,7 @@ setTimeout(() => inputRef.current?.focus(), 50);
   );
 }
 
-function TalmudSegmentStudy({ segment, segIdx, daf, masechet, status, onMastered, onBack, onVocabSave, onWordMastered, segVocab, onVocabDone, onKriahDone, onPrev, onNext, totalSegments, hasNextPage }) {    const [tab, setTab] = useState("read");
+function TalmudSegmentStudy({ segment, segIdx, daf, masechet, status, onMastered, onBack, backLabel, onVocabSave, onWordMastered, segVocab, onVocabDone, onVocabReset, onKriahDone, onPrev, onNext, totalSegments, hasNextPage, student }) {    const [tab, setTab] = useState("read");
   const [popup, setPopup] = useState(null);
   const lastTapTalmudRef = useRef({ word: null, time: 0 });
   const [vocabStage, setVocabStage] = useState("cards");
@@ -2478,8 +2699,24 @@ function TalmudSegmentStudy({ segment, segIdx, daf, masechet, status, onMastered
 const [loadingExplanation, setLoadingExplanation] = useState(false);
 const [rashi, setRashi] = useState(null);
 const [loadingRashi, setLoadingRashi] = useState(false);
-const [rashiTranslation, setRashiTranslation] = useState(null);
-const [loadingRashiTranslation, setLoadingRashiTranslation] = useState(false);
+const [rashiTranslations, setRashiTranslations] = useState({});
+const [tosfot, setTosfot] = useState(null);
+const [loadingTosfot, setLoadingTosfot] = useState(false);
+const [tosfotTranslations, setTosfotTranslations] = useState({});
+const [showTranslit, setShowTranslit] = useState(false);
+const [translit, setTranslit] = useState(null);
+
+useEffect(() => {
+  setTranslit(null);
+  setShowTranslit(false);
+}, [segIdx]);
+
+useEffect(() => {
+  if (!showTranslit || translit) return;
+  withCache(CacheKey.talmudTranslit(masechet, daf, segIdx), () =>
+    callClaude(segment.he, TRANSLITERATION_SYSTEM_PROMPT, 300)
+  ).then(r => { if (r) setTranslit(r); });
+}, [showTranslit]);
   const [showMastered, setShowMastered] = useState(false);
 
 const vocabDone = status?.vocab === true;
@@ -2488,7 +2725,7 @@ const quizDone = status?.quiz === true;
 const mastered = kriahDone && quizDone;
 
 const initMastered = useRef(mastered);
-useEffect(() => { setTab("read"); setVocabStage("cards"); setExplanation(null); setRashi(null); setRashiTranslation(null); setShowMastered(false); initMastered.current = mastered; window.scrollTo(0, 0); }, [segIdx]);
+useEffect(() => { setTab("read"); setVocabStage("cards"); setExplanation(null); setRashi(null); setRashiTranslations({}); setTosfot(null); setTosfotTranslations({}); setShowMastered(false); setShowTranslit(false); initMastered.current = mastered; window.scrollTo(0, 0); }, [segIdx]);
 useEffect(() => {
   if (mastered && !initMastered.current) setShowMastered(true);
 }, [mastered]);
@@ -2527,11 +2764,22 @@ useEffect(() => {
     const now = Date.now();
     const isDoubleTap = now - lastTapTalmudRef.current.time < 350 && lastTapTalmudRef.current.word === raw;
     lastTapTalmudRef.current = { word: raw, time: now };
-    setPopup({ he: raw, en: null, loading: true });
-    callClaude(
-      `Context (${masechet} ${daf}): "${segment.he}"\n\nTranslate the Aramaic word "${raw}" as used in this context. Reply with ONLY the English translation, 1-5 words, nothing else.`,
-      "You are a Talmud translator. Reply with ONLY the English translation. No labels, no punctuation, no explanation.", 40
-    ).then(d => {
+    const ck = CacheKey.talmudWord(masechet, daf, segIdx, raw);
+    setPopup({ he: raw, en: null, loading: true, cacheKey: ck, heContext: segment.he, enContext: segment.en });
+    withCache(ck, async () => {
+      if (segment.en) {
+        return callClaude(
+          `Hebrew/Aramaic segment: "${segment.he}"\nEnglish translation of segment: "${segment.en}"\n\nTapped word: "${raw}"\n\nFind the single English word or short phrase in the translation that corresponds ONLY to "${raw}" — not to neighboring words. Reply with ONLY that word or phrase, nothing else.`,
+          "You are a Talmud word-alignment expert. Identify which English word or short phrase in the given translation corresponds to the specific tapped Hebrew/Aramaic word. Reply with ONLY that word or phrase. No explanation, no extra words.", 30
+        );
+      }
+      const jastrow = await lookupJastrow(raw);
+      if (jastrow) return jastrow;
+      return callClaude(
+        `Context (${masechet} ${daf}): "${segment.he}"\n\nTranslate the Aramaic word "${raw}" as used in this context. Reply with ONLY the English translation, 1-5 words, nothing else.`,
+        "You are a Talmud translator. Reply with ONLY the English translation. No labels, no punctuation, no explanation.", 40
+      );
+    }).then(d => {
       const en = d.trim().replace(/^[\*\_\s]+|[\*\_\s]+$/g, "");
       setPopup(p => p?.he === raw ? { ...p, en, loading: false } : p);
       if (isDoubleTap) onVocabSave(raw, en);
@@ -2575,7 +2823,7 @@ useEffect(() => {
       <div style={{ position:"sticky", top:0, zIndex:100, background:"rgba(245,240,235,.88)", backdropFilter:"blur(20px) saturate(1.4)", WebkitBackdropFilter:"blur(20px) saturate(1.4)", borderBottom:"0.5px solid rgba(0,0,0,.1)", paddingTop:"env(safe-area-inset-top, 0px)" }}>
         <div style={{ maxWidth:720, margin:"0 auto", padding:"10px 18px" }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-            <button onClick={onBack} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:14, color:C.brown, fontWeight:500 }}>‹ {masechet} {daf}</button>
+            <button onClick={onBack} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:14, color:C.brown, fontWeight:500 }}>{backLabel || `‹ ${masechet} ${daf}`}</button>
             <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:13, color:C.muted }}>{segment.he.split(" ").slice(0, 3).join(" ")}…</div>
             {badge}
           </div>
@@ -2631,6 +2879,14 @@ useEffect(() => {
     })()}
   </p>
 </div>
+            <button onClick={() => setShowTranslit(t => !t)} style={{ width:"100%", marginTop:12, padding:"11px", background: showTranslit ? "rgba(184,134,11,.1)" : "none", border:`1px solid ${showTranslit ? "rgba(184,134,11,.4)" : C.border}`, borderRadius:12, fontFamily:"inherit", fontSize:14, cursor:"pointer", color: showTranslit ? "#6B4E1A" : C.muted }}>
+  {showTranslit ? "Hide transliteration" : "Show transliteration"}
+</button>
+{showTranslit && (
+  <div style={{ marginTop:8, padding:"12px 16px", background:"#FAF7F4", borderRadius:10, fontSize:15, color:C.label, lineHeight:2, fontFamily:"serif", letterSpacing:"0.02em", borderLeft:"3px solid rgba(184,134,11,.4)" }}>
+    {translit || transliterateHebrew(segment.he)}
+  </div>
+)}
             <button onClick={async () => {
   if (explanation) { setExplanation(null); return; }
   setLoadingExplanation(true);
@@ -2647,6 +2903,7 @@ useEffect(() => {
     {explanation.replace(/\*\*/g, "").replace(/\*/g, "").replace(/^#+.*\n?/gm, "").trim()}
   </div>
 )}
+<div style={{ display:"flex", gap:8, marginTop:8 }}>
 <button onClick={async () => {
   if (rashi) { setRashi(null); return; }
   setLoadingRashi(true);
@@ -2655,50 +2912,107 @@ useEffect(() => {
     const data = await res.json();
     const entries = (data.he || []).map(s => {
       const clean = s.replace(/<[^>]*>/g, "").trim();
+      const dashIdx = clean.search(/\s[-–—]\s/);
+      if (dashIdx > 0 && dashIdx < 100) {
+        return { dibbur: clean.slice(0, dashIdx).trim(), rest: clean.slice(dashIdx + 3).trim() };
+      }
       const dotIdx = clean.indexOf(". ");
-      const dashIdx = clean.search(/\s[–—]\s/);
-      let split = -1;
-      if (dotIdx > 0 && dotIdx < 80 && (dashIdx < 0 || dotIdx < dashIdx)) split = dotIdx + 1;
-      else if (dashIdx > 0 && dashIdx < 80) split = dashIdx;
-      if (split > 0) return { dibbur: clean.slice(0, split).trim(), rest: clean.slice(split).trim() };
+      if (dotIdx > 0 && dotIdx < 80) {
+        return { dibbur: clean.slice(0, dotIdx).trim(), rest: clean.slice(dotIdx + 2).trim() };
+      }
       return { dibbur: "", rest: clean };
     }).filter(e => e.rest || e.dibbur);
-setRashi(entries.length ? entries : "__none__");
-if (!entries.length) setRashi("__none__");
+    setRashi(entries.length ? entries : "__none__");
+    if (!entries.length) setRashi("__none__");
   } catch { setRashi("Could not load Rashi."); }
   setLoadingRashi(false);
-}} style={{ width:"100%", marginTop:8, padding:"11px", background:"none", border:`1px solid ${C.border}`, borderRadius:12, fontFamily:"inherit", fontSize:14, cursor:"pointer", color:C.muted }}>
+}} style={{ flex:1, padding:"11px", background:"rgba(120,80,200,.07)", border:"1px solid rgba(120,80,200,.25)", borderRadius:12, fontFamily:"inherit", fontSize:14, cursor:"pointer", color:"#6040A0" }}>
   {loadingRashi ? "Loading…" : rashi ? "Hide Rashi" : "View Rashi"}
 </button>
+<button onClick={async () => {
+  if (tosfot) { setTosfot(null); return; }
+  setLoadingTosfot(true);
+  try {
+    const res = await fetch(`https://www.sefaria.org/api/texts/Tosafot_on_${masechet}.${daf}.${segIdx + 1}?commentary=0&context=0&pad=0`);
+    const data = await res.json();
+    const entries = (data.he || []).map(s => {
+      const clean = s.replace(/<[^>]*>/g, "").trim();
+      if (!clean) return null;
+      const dashIdx = clean.search(/\s[-–—]\s/);
+      if (dashIdx > 0 && dashIdx < 100) {
+        return { dibbur: clean.slice(0, dashIdx).trim(), rest: clean.slice(dashIdx + 3).trim() };
+      }
+      const dotIdx = clean.indexOf(". ");
+      if (dotIdx > 0 && dotIdx < 80) {
+        return { dibbur: clean.slice(0, dotIdx).trim(), rest: clean.slice(dotIdx + 2).trim() };
+      }
+      return { dibbur: "", rest: clean };
+    }).filter(Boolean).filter(e => e.rest || e.dibbur);
+    setTosfot(entries.length ? entries : "__none__");
+    if (!entries.length) setTosfot("__none__");
+  } catch { setTosfot("Could not load Tosafot."); }
+  setLoadingTosfot(false);
+}} style={{ flex:1, padding:"11px", background:"rgba(120,80,200,.07)", border:"1px solid rgba(120,80,200,.25)", borderRadius:12, fontFamily:"inherit", fontSize:14, cursor:"pointer", color:"#6040A0" }}>
+  {loadingTosfot ? "Loading…" : tosfot ? "Hide Tosafot" : "View Tosafot"}
+</button>
+</div>
 {rashi && rashi !== "__none__" && (
   <div style={{ marginTop:8, background:"white", borderRadius:12, padding:"14px 16px", boxShadow:"0 1px 4px rgba(0,0,0,.05)" }}>
     <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.06em", textTransform:"uppercase", fontWeight:500, marginBottom:8 }}>Rashi</div>
-    <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:16, lineHeight:2.2, color:C.label, marginBottom:10 }}>
-      {rashi.map((entry, i) => (
-        <div key={i} style={{ marginBottom: i < rashi.length - 1 ? 10 : 0 }}>
+    {rashi.map((entry, i) => (
+      <div key={i} style={{ marginBottom: i < rashi.length - 1 ? 14 : 0, paddingBottom: i < rashi.length - 1 ? 14 : 0, borderBottom: i < rashi.length - 1 ? `0.5px solid ${C.border}` : "none" }}>
+        <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:16, lineHeight:2.2, color:C.label }}>
           {entry.dibbur && <span style={{ fontWeight:700 }}>{entry.dibbur} </span>}{entry.rest}
         </div>
-      ))}
-    </div>
-    <button onClick={async () => {
-      if (rashiTranslation) { setRashiTranslation(null); return; }
-      setLoadingRashiTranslation(true);
-      const trans = await callClaude(
-        `Translate this Rashi commentary into clear English for a Modern Orthodox high school student:\n\n"${rashi.map(e => (e.dibbur ? e.dibbur + " " : "") + e.rest).join("\n")}"\n\nContext: this is Rashi on ${masechet} ${daf}. Give a clean English translation only — no preamble.`,
-        "You are translating Rashi's Talmud commentary into clear, accessible English for high school students. Translate faithfully but naturally. No preamble or labels.", 300
-      );
-      setRashiTranslation(trans.replace(/\*\*/g, "").replace(/\*/g, "").trim());
-      setLoadingRashiTranslation(false);
-    }} style={{ width:"100%", padding:"8px", background:"none", border:`1px solid ${C.border}`, borderRadius:10, fontFamily:"inherit", fontSize:13, cursor:"pointer", color:C.muted }}>
-      {loadingRashiTranslation ? "Translating…" : rashiTranslation ? "Hide translation" : "Translate Rashi"}
-    </button>
-    {rashiTranslation && (
-      <div style={{ marginTop:10, paddingTop:10, borderTop:`0.5px solid ${C.border}`, fontSize:14, color:C.label, lineHeight:1.7 }}>{rashiTranslation}</div>
-    )}
+        <button onClick={async () => {
+          if (rashiTranslations[i]) { setRashiTranslations(t => { const n={...t}; delete n[i]; return n; }); return; }
+          setRashiTranslations(t => ({...t, [i]: null}));
+          const trans = await callClaude(
+            `Translate this Rashi into clear English for a Modern Orthodox high school student:\n\n"${(entry.dibbur ? entry.dibbur + " " : "") + entry.rest}"\n\nContext: Rashi on ${masechet} ${daf}. Translation only — no preamble.`,
+            "You are translating Rashi's Talmud commentary into clear, accessible English for high school students. Translate faithfully but naturally. No preamble or labels.", 200
+          );
+          setRashiTranslations(t => ({...t, [i]: trans.replace(/^#{1,6}\s+.*\n?/gm,"").replace(/\*\*/g,"").replace(/\*/g,"").trim()}));
+        }} style={{ marginTop:6, background:"none", border:`1px solid ${C.border}`, borderRadius:7, padding:"3px 10px", fontSize:12, color:C.muted, cursor:"pointer", fontFamily:"inherit" }}>
+          {rashiTranslations[i] === null ? "Translating…" : rashiTranslations[i] ? "Hide" : "Translate"}
+        </button>
+        {rashiTranslations[i] && (
+          <div style={{ marginTop:6, fontSize:13, color:C.label, lineHeight:1.6 }}>{rashiTranslations[i]}</div>
+        )}
+      </div>
+    ))}
   </div>
 )}
 {rashi === "__none__" && (
   <div style={{ marginTop:10, textAlign:"center", fontSize:13, color:C.muted, padding:"10px 0" }}>No Rashi on this segment</div>
+)}
+{tosfot && tosfot !== "__none__" && (
+  <div style={{ marginTop:8, background:"white", borderRadius:12, padding:"14px 16px", boxShadow:"0 1px 4px rgba(0,0,0,.05)" }}>
+    <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.06em", textTransform:"uppercase", fontWeight:500, marginBottom:8 }}>Tosafot</div>
+    {tosfot.map((entry, i) => (
+      <div key={i} style={{ marginBottom: i < tosfot.length - 1 ? 14 : 0, paddingBottom: i < tosfot.length - 1 ? 14 : 0, borderBottom: i < tosfot.length - 1 ? `0.5px solid ${C.border}` : "none" }}>
+        <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:16, lineHeight:2.2, color:C.label }}>
+          {entry.dibbur && <span style={{ fontWeight:700 }}>{entry.dibbur} </span>}{entry.rest}
+        </div>
+        <button onClick={async () => {
+          if (tosfotTranslations[i]) { setTosfotTranslations(t => { const n={...t}; delete n[i]; return n; }); return; }
+          setTosfotTranslations(t => ({...t, [i]: null}));
+          const trans = await callClaude(
+            `Translate this Tosafot into clear English for a Modern Orthodox high school student:\n\n"${(entry.dibbur ? entry.dibbur + " " : "") + entry.rest}"\n\nContext: Tosafot on ${masechet} ${daf}. Translation only — no preamble.`,
+            "You are translating Tosafot's Talmud commentary into clear, accessible English for high school students. Translate faithfully but naturally. No preamble or labels.", 200
+          );
+          setTosfotTranslations(t => ({...t, [i]: trans.replace(/^#{1,6}\s+.*\n?/gm,"").replace(/\*\*/g,"").replace(/\*/g,"").trim()}));
+        }} style={{ marginTop:6, background:"none", border:`1px solid ${C.border}`, borderRadius:7, padding:"3px 10px", fontSize:12, color:C.muted, cursor:"pointer", fontFamily:"inherit" }}>
+          {tosfotTranslations[i] === null ? "Translating…" : tosfotTranslations[i] ? "Hide" : "Translate"}
+        </button>
+        {tosfotTranslations[i] && (
+          <div style={{ marginTop:6, fontSize:13, color:C.label, lineHeight:1.6 }}>{tosfotTranslations[i]}</div>
+        )}
+      </div>
+    ))}
+  </div>
+)}
+{tosfot === "__none__" && (
+  <div style={{ marginTop:10, textAlign:"center", fontSize:13, color:C.muted, padding:"10px 0" }}>No Tosafot on this segment</div>
 )}
 {!mastered && (
   <Btn style={{ width:"100%", marginTop:14 }} onClick={() => setTab("vocab")}>Continue to Vocab</Btn>
@@ -2710,22 +3024,33 @@ if (!entries.length) setRashi("__none__");
           </>
         )}
 
-        {tab === "vocab" && (
-  vocabStage === "typing"
+{tab === "vocab" && (
+  vocabDone && vocabStage !== "typing"
+    ? <div style={{ textAlign:"center", padding:"50px 20px" }}>
+        <div style={{ width:56,height:56,background:"rgba(52,199,89,.12)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px" }}>
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#34C759" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <p style={{ fontSize:16, marginBottom:20, color:C.label }}>Vocab complete! Tap words in the Read tab to add more.</p>
+        <Btn onClick={() => { if (onVocabReset) onVocabReset(); setTab("read"); }}>Continue to Reading</Btn>
+      </div>
+  : vocabStage === "typing" && Object.keys(segVocab || {}).length > 0
     ? <TypingQuiz
         key={`talmud-typing-${segIdx}`}
         seifIdx={segIdx}
         seifVocab={segVocab || {}}
         onWordMastered={onWordMastered}
-        onDone={() => { setVocabStage("cards"); setTab("kriah"); }}
-        onBack={() => { setVocabStage("cards"); }}
+        onDone={() => { onVocabDone(); setVocabStage("cards"); setTab("kriah"); }}
+        onBack={() => { onVocabDone(); setVocabStage("cards"); }}
       />
     : <SeifCards
         key={`talmud-vocab-${segIdx}`}
         seifIdx={segIdx}
         seifVocab={segVocab || {}}
-        vocabCompleted={false}
-        onDone={(skip) => { if (skip) setTab("read"); else setVocabStage("typing"); }}
+        vocabCompleted={vocabDone}
+        onDone={(skip) => {
+          if (skip) { setTab("read"); }
+          else { setVocabStage("typing"); }
+        }}
       />
 )}
 
@@ -2734,6 +3059,7 @@ if (!entries.length) setRashi("__none__");
             segment={segment}
             masechet={masechet}
             daf={daf}
+            segVocab={segVocab}
 onPass={() => { onKriahDone(); setTab("quiz"); }}
           />
         )}
@@ -2750,7 +3076,7 @@ onPass={() => { onKriahDone(); setTab("quiz"); }}
   />
 )}
       </div>
-      <WordPopup popup={popup} onClose={() => setPopup(null)} />
+      <WordPopup popup={popup} onClose={() => setPopup(null)} student={student} callClaude={callClaude} onFlagResolved={val => setPopup(p => p ? { ...p, en: val } : null)} />
     </div>
   );
 }
@@ -2996,7 +3322,7 @@ if (done || filteredQueue.length === 0) {
   );
 }
 
-function TalmudHome({ student, onBack, onLogout, talmudProgress, onMastered, onVocabSave, onWordMastered, onVocabDone, onKriahDone, talmudVocab, talmudAnki, onAnkiUpdate, defaultMasechet, lastVisitedTalmud, onSetLastVisitedTalmud }) {
+function TalmudHome({ student, onBack, onLogout, talmudProgress, onMastered, onVocabSave, onWordMastered, onVocabDone, onVocabReset, onKriahDone, talmudVocab, talmudAnki, onAnkiUpdate, defaultMasechet, defaultDaf, defaultFromSeg, defaultToSeg, fromAssignment, lastVisitedTalmud, onSetLastVisitedTalmud, progressionLocked }) {
   const filteredMasechtos = TALMUD_TOC;
 const [activeMasechet, setActiveMasechet] = useState(null);
 const [activeDaf, setActiveDaf] = useState(null);
@@ -3017,6 +3343,13 @@ const [masechetSearch, setMasechetSearch] = useState("");
   const [perekData, setPerekData] = useState({});
 
   useEffect(() => { window.scrollTo(0, 0); }, [selectedMasechet, activeDaf, activeSegIdx]);
+
+  useEffect(() => {
+    if (defaultDaf && selectedMasechet) {
+      const startIdx = defaultFromSeg ? defaultFromSeg - 1 : 0;
+      openDaf(selectedMasechet.masechet, defaultDaf, startIdx);
+    }
+  }, []);
 
   useEffect(() => {
     if (!selectedMasechet) return;
@@ -3076,22 +3409,25 @@ setDafSegCounts(c => {
     return (
       <TalmudSegmentStudy
   segment={seg}
-  segIdx={activeSegIdx}
+  segIdx={defaultFromSeg ? activeSegIdx - (defaultFromSeg - 1) : activeSegIdx}
   daf={activeDaf}
   masechet={activeMasechet}
   status={talmudProgress[key]}
   onMastered={() => onMastered(key)}
   onBack={() => setActiveSegIdx(null)}
+  backLabel={null}
   onVocabSave={(he, en) => onVocabSave(key, he, en)}
   onWordMastered={(he) => onWordMastered(key, he)}
   segVocab={talmudVocab[key] || {}}
 onVocabDone={() => onVocabDone(key)}
+  onVocabReset={() => onVocabReset(key)}
   onKriahDone={() => onKriahDone(key)}
-  onPrev={() => setActiveSegIdx(i => Math.max(0, i - 1))}
+  onPrev={() => setActiveSegIdx(i => Math.max(defaultFromSeg ? defaultFromSeg - 1 : 0, i - 1))}
   onNext={() => {
-    if (activeSegIdx < segments.length - 1) {
+    const lastIdx = defaultToSeg ? Math.min(defaultToSeg - 1, segments.length - 1) : segments.length - 1;
+    if (activeSegIdx < lastIdx) {
       setActiveSegIdx(i => i + 1);
-    } else {
+    } else if (!defaultToSeg) {
       const dafimList = selectedMasechet?.dafim || [];
       const currentDafIdx = dafimList.indexOf(activeDaf);
       if (currentDafIdx >= 0 && currentDafIdx < dafimList.length - 1) {
@@ -3099,45 +3435,29 @@ onVocabDone={() => onVocabDone(key)}
       }
     }
   }}
-  totalSegments={segments.length}
-  hasNextPage={(() => {
+  totalSegments={defaultToSeg ? (defaultToSeg - (defaultFromSeg || 1) + 1) : segments.length}
+  hasNextPage={!defaultToSeg && (() => {
     const dafimList = selectedMasechet?.dafim || [];
     const idx = dafimList.indexOf(activeDaf);
     return idx >= 0 && idx < dafimList.length - 1;
   })()}
+  student={student}
 />
     );
   }
 
   if (activeDaf && !loadingDaf) {
-    const masteredCount = segments.filter((_, i) => { const st = talmudProgress[`${activeMasechet}_${activeDaf}_${i}`]; return st?.kriah && st?.quiz; }).length;
+    const assignedSegs = segments.filter((_, i) => (!defaultFromSeg || i >= defaultFromSeg - 1) && (!defaultToSeg || i <= defaultToSeg - 1));
+    const masteredCount = assignedSegs.filter((_, j) => { const i = (defaultFromSeg ? defaultFromSeg - 1 : 0) + j; const st = talmudProgress[`${activeMasechet}_${activeDaf}_${i}`]; return st?.kriah && st?.quiz; }).length;
+    const totalDisplayed = assignedSegs.length;
     return (
       <div style={{ minHeight:"100vh", background:C.bg }}>
         <style>{CSS}</style>
         <div style={{ maxWidth:720, margin:"0 auto", padding:"calc(28px + env(safe-area-inset-top, 0px)) calc(20px + env(safe-area-inset-right, 0px)) 80px calc(20px + env(safe-area-inset-left, 0px))" }}>
-          <button onClick={() => { setActiveDaf(null); setSegments([]); }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:C.brown, fontFamily:"inherit", marginBottom:16, fontWeight:500 }}>‹ Back</button>
-       {(() => {
-  const inProgress = segments.findIndex((_, i) => {
-    const key = `${activeMasechet}_${activeDaf}_${i}`;
-    const st = talmudProgress[key];
-    return st && !(st?.kriah && st?.quiz);
-  });
-  if (inProgress === -1) return null;
-  return (
-    <div onClick={() => setActiveSegIdx(inProgress)} style={{ background:"rgba(184,134,11,.08)", borderRadius:12, padding:"14px 18px", marginBottom:12, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}
-      onMouseEnter={e => e.currentTarget.style.background="rgba(184,134,11,.13)"}
-      onMouseLeave={e => e.currentTarget.style.background="rgba(184,134,11,.08)"}>
-      <div>
-        <div style={{ fontSize:11, color:"#6B4E1A", marginBottom:4, fontWeight:500, letterSpacing:"0.04em", textTransform:"uppercase" }}>Continue</div>
-        <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:15, fontWeight:700, color:C.label }}>{segments[inProgress]?.he.split(" ").slice(0,3).join(" ")}…</div>
-      </div>
-      <span style={{ color:C.muted, fontSize:18 }}>›</span>
-    </div>
-  );
-})()}
+          <button onClick={() => { if (fromAssignment) { onBack(); } else { setActiveDaf(null); setSegments([]); } }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:C.brown, fontFamily:"inherit", marginBottom:16, fontWeight:500 }}>{fromAssignment ? "← Assignment" : "‹ Back"}</button>
           <div style={{ background:"white", borderRadius:14, padding:"16px 18px", boxShadow:"0 1px 4px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04)", marginBottom:16 }}>
             <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:22, fontWeight:700, marginBottom:4, color:C.label }}>{activeMasechet} · {activeDaf}</div>
-            <div style={{ fontSize:13, color:C.muted }}>{masteredCount}/{segments.length} segments mastered</div>
+            <div style={{ fontSize:13, color:C.muted }}>{masteredCount}/{totalDisplayed} segments mastered{defaultFromSeg || defaultToSeg ? ` (assigned range)` : ""}</div>
           </div>
 
           <div className="seg-wrap" style={{ marginBottom:18 }}>
@@ -3149,6 +3469,8 @@ onVocabDone={() => onVocabDone(key)}
           {dafTab === "segments" && (
 <div style={{ display:"flex", flexDirection:"column" }}>
       {segments.map((seg, i) => {
+      if (defaultFromSeg && i < defaultFromSeg - 1) return null;
+      if (defaultToSeg && i > defaultToSeg - 1) return null;
       const key = `${activeMasechet}_${activeDaf}_${i}`;
       const st = talmudProgress[key];
 const isMastered = st?.kriah && st?.quiz;
@@ -3168,9 +3490,9 @@ onMouseEnter={e => e.currentTarget.style.background="#FAF7F4"}
           {dafTab === "shakla" && (
             <ShaklaVTarya
               segments={segments}
-              progress={talmudProgress}
               masechet={activeMasechet}
               daf={activeDaf}
+              student={student}
             />
           )}
         </div>
@@ -3221,20 +3543,41 @@ onMouseEnter={e => e.currentTarget.style.background="#FAF7F4"}
         )}
 {homeTab === "learn" && !loadingDaf && !selectedMasechet && (
   <div>
-    {lastVisitedTalmud && (
-      <div onClick={async () => {
-        const m = TALMUD_TOC.find(t => t.masechet === lastVisitedTalmud.masechet);
-        if (m) { setSelectedMasechet(m); await openDaf(lastVisitedTalmud.masechet, lastVisitedTalmud.daf); setActiveSegIdx(lastVisitedTalmud.segIdx); }
-      }} style={{ background:"rgba(184,134,11,.08)", borderRadius:14, padding:"14px 18px", marginBottom:16, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", border:"0.5px solid rgba(184,134,11,.2)" }}
-        onMouseEnter={e => e.currentTarget.style.background="rgba(184,134,11,.13)"}
-        onMouseLeave={e => e.currentTarget.style.background="rgba(184,134,11,.08)"}>
-        <div>
-          <div style={{ fontSize:11, color:"#6B4E1A", marginBottom:3, fontWeight:500, letterSpacing:"0.02em" }}>Pick up where you left off</div>
-          <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:15, fontWeight:700, color:C.label }}>{lastVisitedTalmud.masechet} · {lastVisitedTalmud.daf} · Seg. {lastVisitedTalmud.segIdx + 1}</div>
+    {(() => {
+      const seen = new Set();
+      const activeDafs = [];
+      TALMUD_TOC.forEach(m => {
+        const prefix = `${m.masechet}_`;
+        Object.entries(talmudProgress)
+          .filter(([k, v]) => k.startsWith(prefix) && (v?.vocab || v?.kriah || v?.quiz) && !(v?.kriah && v?.quiz))
+          .forEach(([k]) => {
+            const rest = k.slice(prefix.length);
+            const daf = rest.slice(0, rest.lastIndexOf('_'));
+            const key = `${m.masechet}_${daf}`;
+            if (!seen.has(key)) { seen.add(key); activeDafs.push({ masechet: m.masechet, he: m.he, daf }); }
+          });
+      });
+      activeDafs.sort((a, b) => a.masechet.localeCompare(b.masechet) || a.daf.localeCompare(b.daf, undefined, { numeric: true }));
+      if (!activeDafs.length) return null;
+      return (
+        <div style={{ marginBottom:16 }}>
+          <div style={{ fontSize:11, color:"#6B4E1A", fontWeight:600, letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:8, paddingLeft:2 }}>Active Dafim</div>
+          {activeDafs.map(({ masechet, he, daf }) => (
+            <div key={`${masechet}_${daf}`}
+              onClick={() => { const m = TALMUD_TOC.find(t => t.masechet === masechet); if (m) { setSelectedMasechet(m); openDaf(masechet, daf); } }}
+              style={{ background:"rgba(184,134,11,.08)", borderRadius:12, padding:"12px 16px", marginBottom:6, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", border:"0.5px solid rgba(184,134,11,.15)" }}
+              onMouseEnter={e => e.currentTarget.style.background="rgba(184,134,11,.13)"}
+              onMouseLeave={e => e.currentTarget.style.background="rgba(184,134,11,.08)"}>
+              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:16, fontWeight:700, color:C.label }}>{he}</div>
+                <div style={{ fontSize:13, color:"#6B4E1A", fontWeight:500 }}>{masechet} · {daf}</div>
+              </div>
+              <span style={{ color:C.muted, fontSize:18 }}>›</span>
+            </div>
+          ))}
         </div>
-        <span style={{ color:"#6B4E1A", fontSize:20, fontWeight:300 }}>›</span>
-      </div>
-    )}
+      );
+    })()}
     <div style={{ display:"flex", justifyContent:"center", marginBottom:16 }}>
       <div style={{ display:"flex", alignItems:"center", background:"white", borderRadius:980, boxShadow:"0 1px 6px rgba(0,0,0,.08)", padding:"8px 8px 8px 16px", gap:8, width:"100%" }}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -3596,7 +3939,12 @@ const [studentClasses, setStudentClasses] = useState([]);
 const [selectedClass, setSelectedClass] = useState(null);
 const [subjectOrigin, setSubjectOrigin] = useState(null); // "classroom" | null
 const [ksaStartOpen, setKsaStartOpen] = useState(false);
+const [classroomSelectedAssignment, setClassroomSelectedAssignment] = useState(null);
 const [talmudDefaultMasechet, setTalmudDefaultMasechet] = useState(null);
+const [talmudDefaultDaf, setTalmudDefaultDaf] = useState(null);
+const [talmudDefaultFromSeg, setTalmudDefaultFromSeg] = useState(null);
+const [talmudDefaultToSeg, setTalmudDefaultToSeg] = useState(null);
+const [progressionLocked, setProgressionLocked] = useState(true);
 const savedNav = JSON.parse(localStorage.getItem("ksa_nav") || "null");
 const [view, setView]                 = useState("home");
 const [activeSeif, setActiveSeif]     = useState(0);
@@ -3830,7 +4178,7 @@ function handleSubjectBack() {
   setSubject(orig || null);
 }
 
-if (!subject) return <SubjectSelector student={student} studentClasses={studentClasses} onSelect={(subj, cls) => { if (cls) setSelectedClass(cls); setSubject(subj); }} onJoinedClass={newCls => setStudentClasses(prev => prev.find(c => c.code === newCls.code) ? prev : [...prev, newCls])} onLogout={logout} />;
+if (!subject) return <SubjectSelector student={student} studentClasses={studentClasses} onSelect={(subj, cls) => { if (cls) setSelectedClass(cls); if (subj === "talmud") { setTalmudDefaultFromSeg(null); setTalmudDefaultToSeg(null); setTalmudDefaultDaf(null); setTalmudDefaultMasechet(null); } setSubject(subj); }} onJoinedClass={newCls => setStudentClasses(prev => prev.find(c => c.code === newCls.code) ? prev : [...prev, newCls])} onLogout={logout} />;
 
 if (subject === "classroom") return (
   <ClassroomView
@@ -3839,6 +4187,8 @@ if (subject === "classroom") return (
     allProgress={allProgress}
     talmudProgress={talmudProgress}
     seifCounts={seifCounts}
+    selectedAssignment={classroomSelectedAssignment}
+    onSelectAssignment={setClassroomSelectedAssignment}
     onBack={() => setSubject(null)}
     onStudyKSA={async simanNum => {
       setSubjectOrigin("classroom");
@@ -3848,9 +4198,13 @@ if (subject === "classroom") return (
       }
       setSubject("ksa");
     }}
-    onStudyTalmud={masechet => {
+    onStudyTalmud={(masechet, daf, fromSeg, toSeg, locked) => {
       setSubjectOrigin("classroom");
       if (masechet) setTalmudDefaultMasechet(masechet);
+      if (daf) setTalmudDefaultDaf(daf); else setTalmudDefaultDaf(null);
+      setTalmudDefaultFromSeg(fromSeg || null);
+      setTalmudDefaultToSeg(toSeg || null);
+      setProgressionLocked(locked !== false);
       setSubject("talmud");
     }}
   />
@@ -3866,11 +4220,17 @@ if (subject === "talmud") return (
     onVocabSave={(key, he, en) => setTalmudVocab(v => ({ ...v, [key]: { ...(v[key]||{}), [he]: { he, en } } }))}
     onWordMastered={(key, he) => setTalmudVocab(v => { const k = { ...(v[key]||{}) }; delete k[he]; return { ...v, [key]: k }; })}
     onVocabDone={(key) => setTalmudProgress(p => ({ ...p, [key]: { ...(p[key]||{}), vocab: true } }))}
+    onVocabReset={(key) => { setTalmudVocab(v => ({ ...v, [key]: {} })); setTalmudProgress(p => ({ ...p, [key]: { ...(p[key]||{}), vocab: false } })); }}
     onKriahDone={(key) => setTalmudProgress(p => ({ ...p, [key]: { ...(p[key]||{}), kriah: true } }))}
     onMastered={(key) => setTalmudProgress(p => ({ ...p, [key]: { ...(p[key]||{}), quiz: true } }))}
     talmudAnki={talmudAnki}
     onAnkiUpdate={(he, state) => setTalmudAnki(a => ({ ...a, [he]: state }))}
     defaultMasechet={talmudDefaultMasechet}
+    defaultDaf={talmudDefaultDaf}
+    defaultFromSeg={talmudDefaultFromSeg}
+    defaultToSeg={talmudDefaultToSeg}
+    fromAssignment={subjectOrigin === "classroom"}
+    progressionLocked={progressionLocked}
     lastVisitedTalmud={lastVisitedTalmud}
     onSetLastVisitedTalmud={setLastVisitedTalmud}
   />
@@ -3900,6 +4260,7 @@ if (view === "seif") return (
     quizScores={quizScores}
     onQuizScore={handleQuizScore}
     onNext={handleNextSeif}
+    student={student}
   />
 );
 return (

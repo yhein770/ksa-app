@@ -278,9 +278,10 @@ const TYPE_META = {
   resource:     { label: "Resource",     color: C.purple },
 };
 
-export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved, onSelectAssignment, filterType }) {
+export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved, onSelectAssignment, onPreviewAssignment, onViewProgress, filterType, allProgress, talmudProgress, onCountChange }) {
   const [items, setItems] = useState([]);
   const [composing, setComposing] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
   const [postType, setPostType] = useState("announcement");
   // announcement
   const [annText, setAnnText] = useState("");
@@ -290,7 +291,10 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
   const [ksaMode, setKsaMode] = useState("all");
   const [ksaFrom, setKsaFrom] = useState("");
   const [ksaTo, setKsaTo] = useState("");
-  const [talmudMasechtos, setTalmudMasechtos] = useState([]);
+  const [talmudMasechet, setTalmudMasechet] = useState("");
+  const [talmudDaf, setTalmudDaf] = useState("");
+  const [talmudFromSeg, setTalmudFromSeg] = useState("");
+  const [talmudToSeg, setTalmudToSeg] = useState("");
   // resource
   const [resTitle, setResTitle] = useState("");
   const [resDesc, setResDesc] = useState("");
@@ -299,19 +303,43 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
   const [uploadProgress, setUploadProgress] = useState(null);
   const [uploadError, setUploadError] = useState(null);
   const [posting, setPosting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   useEffect(() => {
     const q = query(collection(db, "classes", classCode, "feed"), orderBy("timestamp", "desc"));
     const unsub = onSnapshot(q, snap => {
-      setItems(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const loaded = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setItems(loaded);
+      if (onCountChange) {
+        const count = filterType ? loaded.filter(i => i.type === filterType).length : loaded.length;
+        onCountChange(count);
+      }
     });
     return unsub;
   }, [classCode]);
 
   function resetForm() {
     setAnnText(""); setAssignName(""); setDueDate(""); setKsaMode("all"); setKsaFrom(""); setKsaTo("");
-    setTalmudMasechtos([]); setResTitle(""); setResDesc(""); setResUrl(""); setResFile(null); setUploadProgress(null); setUploadError(null);
+    setTalmudMasechet(""); setTalmudDaf(""); setTalmudFromSeg(""); setTalmudToSeg(""); setResTitle(""); setResDesc(""); setResUrl(""); setResFile(null); setUploadProgress(null); setUploadError(null);
+    setEditingItem(null);
     setComposing(false);
+  }
+
+  function startEdit(item) {
+    setPostType("assignment");
+    setAssignName(item.title || "");
+    setDueDate(item.dueDate || "");
+    const ksa = item.assignmentData?.ksa;
+    if (ksa?.all) { setKsaMode("all"); }
+    else if (ksa?.simanim?.length) { setKsaMode("range"); setKsaFrom(String(Math.min(...ksa.simanim))); setKsaTo(String(Math.max(...ksa.simanim))); }
+    else { setKsaMode("none"); }
+    const t = item.assignmentData?.talmud;
+    setTalmudMasechet(t?.masechet || "");
+    setTalmudDaf(t?.daf || "");
+    setTalmudFromSeg(t?.fromSeg ? String(t.fromSeg) : "");
+    setTalmudToSeg(t?.toSeg ? String(t.toSeg) : "");
+    setEditingItem(item);
+    setComposing(true);
   }
 
   async function post() {
@@ -326,9 +354,12 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
       const ksaSimanim = ksaMode === "range" && ksaFrom && ksaTo
         ? Array.from({ length: Math.max(0, parseInt(ksaTo) - parseInt(ksaFrom) + 1) }, (_, i) => parseInt(ksaFrom) + i).filter(n => n >= 1 && n <= 221)
         : null;
+      const talmudData = talmudMasechet && talmudDaf
+        ? { masechet: talmudMasechet, daf: talmudDaf, fromSeg: talmudFromSeg ? parseInt(talmudFromSeg) : 1, toSeg: talmudToSeg ? parseInt(talmudToSeg) : null, masechtos: [talmudMasechet] }
+        : null;
       const assignmentData = {
         ksa: ksaSimanim?.length ? { simanim: ksaSimanim } : (ksaMode === "all" ? { all: true } : null),
-        talmud: talmudMasechtos.length ? { masechtos: talmudMasechtos } : null,
+        talmud: talmudData,
       };
       item = { ...base, assignmentData, title: assignName.trim() || "Assignment", dueDate: dueDate || null };
       await updateAssignments(classCode, assignmentData);
@@ -359,10 +390,18 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
       item = { ...base, title: resTitle.trim(), description: resDesc.trim(), url: resUrl.trim(), fileUrl, fileName };
     }
 
-    await addDoc(collection(db, "classes", classCode, "feed"), {
-      ...item,
-      timestamp: new Date().toISOString(),
-    });
+    if (editingItem) {
+      await setDoc(doc(db, "classes", classCode, "feed", editingItem.id), {
+        ...item,
+        timestamp: editingItem.timestamp,
+        editedAt: new Date().toISOString(),
+      });
+    } else {
+      await addDoc(collection(db, "classes", classCode, "feed"), {
+        ...item,
+        timestamp: new Date().toISOString(),
+      });
+    }
     resetForm();
     setPosting(false);
   }
@@ -380,10 +419,11 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
       {/* Compose sheet */}
       {isTeacher && composing && (
         <div style={{ background: "white", borderRadius: 16, padding: "18px 20px", marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,.05)" }}>
+          {editingItem && <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, fontWeight: 500 }}>Editing assignment</div>}
           {/* Type tabs */}
           <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
             {Object.entries(TYPE_META).map(([t, { label, color }]) => (
-              <button key={t} onClick={() => setPostType(t)} style={{ flex: 1, padding: "7px 6px", borderRadius: 10, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, background: postType === t ? color : "rgba(0,0,0,.06)", color: postType === t ? "white" : C.label, transition: "all .12s" }}>{label}</button>
+              <button key={t} onClick={() => !editingItem && setPostType(t)} style={{ flex: 1, padding: "7px 6px", borderRadius: 10, border: "none", cursor: editingItem ? "default" : "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, background: postType === t ? color : "rgba(0,0,0,.06)", color: postType === t ? "white" : C.label, transition: "all .12s", opacity: editingItem && postType !== t ? 0.4 : 1 }}>{label}</button>
             ))}
           </div>
 
@@ -424,10 +464,22 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
                 </div>
               )}
               <div style={{ fontWeight: 600, fontSize: 13, color: C.label, marginBottom: 8 }}>Talmud</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 4 }}>
-                {MASECHTOS.map(m => (
-                  <button key={m} onClick={() => setTalmudMasechtos(p => p.includes(m) ? p.filter(x => x !== m) : [...p, m])} style={{ padding: "4px 10px", borderRadius: 20, border: `1px solid ${talmudMasechtos.includes(m) ? C.brown : C.border}`, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 500, background: talmudMasechtos.includes(m) ? "rgba(92,51,23,.08)" : "white", color: talmudMasechtos.includes(m) ? C.brown : C.label }}>{m}</button>
-                ))}
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <select value={talmudMasechet} onChange={e => setTalmudMasechet(e.target.value)}
+                  style={{ flex: 2, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", background: "white", color: talmudMasechet ? C.label : C.muted }}>
+                  <option value="">Masechet…</option>
+                  {MASECHTOS.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+                <input value={talmudDaf} onChange={e => setTalmudDaf(e.target.value)} placeholder="Daf (e.g. 2a)"
+                  style={{ flex: 1, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>Segments</div>
+                <input type="number" min="1" value={talmudFromSeg} onChange={e => setTalmudFromSeg(e.target.value)} placeholder="From"
+                  style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                <span style={{ color: C.muted }}>–</span>
+                <input type="number" min="1" value={talmudToSeg} onChange={e => setTalmudToSeg(e.target.value)} placeholder="To"
+                  style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
               </div>
             </div>
           )}
@@ -459,7 +511,7 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
           )}
 
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-            <Btn onClick={post} bg={C.brown} disabled={posting} style={{ flex: 1 }}>{posting ? (uploadProgress !== null && uploadProgress < 100 ? `Uploading ${uploadProgress}%…` : "Posting…") : "Post"}</Btn>
+            <Btn onClick={post} bg={C.brown} disabled={posting} style={{ flex: 1 }}>{posting ? (uploadProgress !== null && uploadProgress < 100 ? `Uploading ${uploadProgress}%…` : "Saving…") : (editingItem ? "Save Changes" : "Post")}</Btn>
             <Btn onClick={resetForm} style={{ flex: 1 }}>Cancel</Btn>
           </div>
         </div>
@@ -479,6 +531,25 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
           const isAssignment = item.type === "assignment";
           const dueDateStr = item.dueDate ? new Date(item.dueDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : null;
           const isPastDue = item.dueDate && new Date(item.dueDate + "T23:59:59") < new Date();
+          // Compute completion for student view
+          let isComplete = false;
+          if (!isTeacher && isAssignment && (allProgress || talmudProgress)) {
+            const ad = item.assignmentData;
+            const ksaDone = !ad?.ksa || (ad.ksa.all ? false : (ad.ksa.simanim || []).every(num => {
+              const seifs = allProgress?.[num] || {};
+              return Object.values(seifs).length > 0 && Object.values(seifs).every(v => v === "mastered");
+            }));
+            const talmudDone = !ad?.talmud?.masechet || (() => {
+              const t = ad.talmud;
+              if (!t.fromSeg || !t.toSeg) return false;
+              for (let i = t.fromSeg - 1; i <= t.toSeg - 1; i++) {
+                const st = talmudProgress?.[`${t.masechet}_${t.daf}_${i}`];
+                if (!st?.kriah || !st?.quiz) return false;
+              }
+              return true;
+            })();
+            isComplete = ksaDone && talmudDone && (ad?.ksa || ad?.talmud);
+          }
           return (
             <div key={item.id} style={{ background: "white", borderRadius: 16, padding: "16px 18px", marginBottom: 10, boxShadow: "0 1px 3px rgba(0,0,0,.05),0 3px 12px rgba(0,0,0,.04)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
@@ -486,8 +557,22 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
                   <span style={{ background: meta.color, color: "white", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 600 }}>{meta.label}</span>
                   <span style={{ fontSize: 12, color: C.muted, fontWeight: 500 }}>{item.authorName}</span>
                 </div>
-                <span style={{ fontSize: 11, color: C.muted }}>{formatRelTime(item.timestamp)}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: C.muted }}>{formatRelTime(item.timestamp)}</span>
+                  {isTeacher && confirmDelete !== item.id && (
+                    <button onClick={() => setConfirmDelete(item.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 6px", color: C.muted, fontSize: 16, lineHeight: 1 }} title="Delete">×</button>
+                  )}
+                </div>
               </div>
+              {isTeacher && confirmDelete === item.id && (
+                <div style={{ background: "rgba(255,59,48,.06)", borderRadius: 10, padding: "10px 14px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 13, color: C.red, fontWeight: 500 }}>Delete this post?</span>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={async () => { await deleteDoc(doc(db, "classes", classCode, "feed", item.id)); setConfirmDelete(null); }} style={{ background: C.red, color: "white", border: "none", borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600 }}>Delete</button>
+                    <button onClick={() => setConfirmDelete(null)} style={{ background: "rgba(0,0,0,.07)", color: C.label, border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontFamily: "inherit", fontSize: 12 }}>Cancel</button>
+                  </div>
+                </div>
+              )}
 
               {item.type === "announcement" && (
                 <p style={{ fontSize: 14, color: C.label, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{item.text}</p>
@@ -495,7 +580,10 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
 
               {isAssignment && (
                 <div>
-                  <p style={{ fontSize: 16, fontWeight: 700, color: C.label, marginBottom: 4 }}>{item.title}</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <p style={{ fontSize: 16, fontWeight: 700, color: C.label, margin: 0 }}>{item.title}</p>
+                    {isComplete && <span style={{ background: "rgba(52,199,89,.12)", color: C.green, borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>✓ Complete</span>}
+                  </div>
                   {dueDateStr && (
                     <div style={{ fontSize: 12, fontWeight: 600, color: isPastDue ? C.red : C.gold, marginBottom: 8 }}>
                       Due {dueDateStr}{isPastDue ? " · Past due" : ""}
@@ -504,14 +592,35 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
                   <div style={{ fontSize: 13, color: C.muted, marginBottom: onSelectAssignment ? 12 : 0 }}>
                     {item.assignmentData?.ksa?.simanim && `KSA: Simanim ${Math.min(...item.assignmentData.ksa.simanim)}–${Math.max(...item.assignmentData.ksa.simanim)}`}
                     {item.assignmentData?.ksa?.all && "KSA: All Simanim"}
-                    {item.assignmentData?.ksa && item.assignmentData?.talmud?.masechtos && " · "}
-                    {item.assignmentData?.talmud?.masechtos && `Talmud: ${item.assignmentData.talmud.masechtos.join(", ")}`}
+                    {item.assignmentData?.ksa && item.assignmentData?.talmud && " · "}
+                    {item.assignmentData?.talmud?.masechet && (() => {
+                      const t = item.assignmentData.talmud;
+                      const segs = t.fromSeg ? (t.toSeg ? `segs ${t.fromSeg}–${t.toSeg}` : `from seg ${t.fromSeg}`) : "";
+                      return `Talmud: ${t.masechet} ${t.daf}${segs ? ` · ${segs}` : ""}`;
+                    })()}
                   </div>
-                  {onSelectAssignment && (
-                    <button onClick={() => onSelectAssignment(item)} style={{ marginTop: 4, background: C.brown, color: "white", border: "none", borderRadius: 10, padding: "8px 18px", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>
-                      Open Assignment →
-                    </button>
-                  )}
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                    {onSelectAssignment && (
+                      <button onClick={() => onSelectAssignment(item)} style={{ background: C.brown, color: "white", border: "none", borderRadius: 10, padding: "8px 18px", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>
+                        Open Assignment →
+                      </button>
+                    )}
+                    {onViewProgress && isTeacher && (
+                      <button onClick={() => onViewProgress(item)} style={{ background: C.brown, color: "white", border: "none", borderRadius: 10, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>
+                        Student Progress
+                      </button>
+                    )}
+                    {onPreviewAssignment && isTeacher && (
+                      <button onClick={() => onPreviewAssignment(item)} style={{ background: "rgba(92,51,23,.08)", color: C.brown, border: "none", borderRadius: 10, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>
+                        Preview
+                      </button>
+                    )}
+                    {isTeacher && (
+                      <button onClick={() => startEdit(item)} style={{ background: "rgba(0,0,0,.05)", color: C.label, border: "none", borderRadius: 10, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 500 }}>
+                        Edit
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -754,6 +863,49 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
   const [copied, setCopied] = useState(false);
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("students");
+  const [previewAssignment, setPreviewAssignment] = useState(null);
+  const [progressAssignment, setProgressAssignment] = useState(null);
+  const [progressStudents, setProgressStudents] = useState([]);
+  const [loadingProgress, setLoadingProgress] = useState(false);
+
+  async function openProgress(item) {
+    setProgressAssignment(item);
+    setLoadingProgress(true);
+    const fresh = await Promise.all((classData.students || []).map(loadStudentDoc));
+    setProgressStudents(fresh.filter(Boolean));
+    setLoadingProgress(false);
+  }
+
+  function computeAssignmentProgress(student, ad) {
+    const t = ad?.talmud;
+    let talmudDone = 0, talmudTotal = 0;
+    if (t?.masechet && t?.fromSeg && t?.toSeg) {
+      talmudTotal = t.toSeg - t.fromSeg + 1;
+      for (let i = t.fromSeg - 1; i <= t.toSeg - 1; i++) {
+        const st = student.talmudProgress?.[`${t.masechet}_${t.daf}_${i}`];
+        if (st?.kriah && st?.quiz) talmudDone++;
+      }
+    } else if (t?.masechet && t?.daf) {
+      // no seg range — count any mastered segs on that daf
+      Object.entries(student.talmudProgress || {}).forEach(([k, v]) => {
+        if (k.startsWith(`${t.masechet}_${t.daf}_`)) {
+          talmudTotal++;
+          if (v?.kriah && v?.quiz) talmudDone++;
+        }
+      });
+    }
+    const ksa = ad?.ksa;
+    let ksaDone = 0, ksaTotal = 0;
+    if (ksa?.simanim?.length) {
+      ksaTotal = ksa.simanim.length;
+      ksa.simanim.forEach(num => {
+        const seifs = student.allProgress?.[num] || {};
+        if (Object.values(seifs).length > 0 && Object.values(seifs).every(v => v === "mastered")) ksaDone++;
+      });
+    }
+    const isComplete = (talmudTotal === 0 || talmudDone === talmudTotal) && (ksaTotal === 0 || ksaDone === ksaTotal) && (talmudTotal > 0 || ksaTotal > 0);
+    return { talmudDone, talmudTotal, ksaDone, ksaTotal, isComplete };
+  }
 
   useEffect(() => {
     async function load() {
@@ -809,6 +961,19 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
           </div>
           <button onClick={copyCode} style={{ background: copied ? C.green : C.brown, color: "white", border: "none", borderRadius: 10, padding: "9px 18px", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600, transition: "background .2s" }}>
             {copied ? "✓ Copied" : "Copy"}
+          </button>
+        </div>
+        <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: C.bg, borderRadius: 10 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.label }}>Shakla v'Tarya progression lock</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{classData.progressionLocked !== false ? "Students must complete segments to unlock chavruta" : "Students can access chavruta freely"}</div>
+          </div>
+          <button onClick={async () => {
+            const newVal = classData.progressionLocked === false ? true : false;
+            await setDoc(doc(db, "classes", classData.code), { progressionLocked: newVal }, { merge: true });
+            setClassData(c => ({ ...c, progressionLocked: newVal }));
+          }} style={{ background: classData.progressionLocked !== false ? C.brown : C.green, color: "white", border: "none", borderRadius: 20, padding: "6px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, transition: "background .2s", flexShrink: 0 }}>
+            {classData.progressionLocked !== false ? "Locked" : "Unlocked"}
           </button>
         </div>
       </div>
@@ -904,7 +1069,147 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
           isTeacher={true}
           currentUser={teacher}
           onAssignmentSaved={newAssignments => setClassData(c => ({ ...c, assignments: newAssignments }))}
+          onPreviewAssignment={setPreviewAssignment}
+          onViewProgress={openProgress}
         />
+      )}
+
+      {/* Assignment progress sheet */}
+      {progressAssignment && (
+        <div onClick={() => setProgressAssignment(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:"#F5F0EB", borderRadius:"20px 20px 0 0", padding:"24px 20px 40px", width:"100%", maxWidth:720, maxHeight:"85vh", overflowY:"auto" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+              <div>
+                <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.06em", textTransform:"uppercase", fontWeight:500, marginBottom:4 }}>Student Progress</div>
+                <div style={{ fontWeight:700, fontSize:18, color:C.label }}>{progressAssignment.title}</div>
+              </div>
+              <button onClick={() => setProgressAssignment(null)} style={{ background:"none", border:"none", fontSize:22, cursor:"pointer", color:C.muted, lineHeight:1 }}>×</button>
+            </div>
+            {(() => {
+              const ad = progressAssignment.assignmentData;
+              const t = ad?.talmud;
+              const ksa = ad?.ksa;
+              return (
+                <div style={{ fontSize:12, color:C.muted, marginBottom:20 }}>
+                  {ksa?.simanim && `KSA: Simanim ${Math.min(...ksa.simanim)}–${Math.max(...ksa.simanim)}`}
+                  {ksa?.all && "KSA: All Simanim"}
+                  {ksa && t?.masechet && " · "}
+                  {t?.masechet && `${t.masechet} ${t.daf}${t.fromSeg && t.toSeg ? ` · segs ${t.fromSeg}–${t.toSeg}` : ""}`}
+                </div>
+              );
+            })()}
+            {loadingProgress ? (
+              <p style={{ color:C.muted, textAlign:"center", padding:"30px 0" }}>Loading…</p>
+            ) : progressStudents.length === 0 ? (
+              <p style={{ color:C.muted, textAlign:"center", padding:"30px 0" }}>No students enrolled.</p>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {progressStudents
+                  .map(s => ({ s, prog: computeAssignmentProgress(s, progressAssignment.assignmentData) }))
+                  .sort((a, b) => {
+                    if (a.prog.isComplete && !b.prog.isComplete) return -1;
+                    if (!a.prog.isComplete && b.prog.isComplete) return 1;
+                    const aTotal = a.prog.talmudTotal + a.prog.ksaTotal;
+                    const bTotal = b.prog.talmudTotal + b.prog.ksaTotal;
+                    const aPct = aTotal > 0 ? (a.prog.talmudDone + a.prog.ksaDone) / aTotal : 0;
+                    const bPct = bTotal > 0 ? (b.prog.talmudDone + b.prog.ksaDone) / bTotal : 0;
+                    return bPct - aPct;
+                  })
+                  .map(({ s, prog }) => {
+                    const overall = prog.talmudTotal + prog.ksaTotal > 0
+                      ? Math.round(((prog.talmudDone + prog.ksaDone) / (prog.talmudTotal + prog.ksaTotal)) * 100)
+                      : 0;
+                    return (
+                      <div key={s.email} style={{ background:"white", borderRadius:14, padding:"14px 16px", boxShadow:"0 1px 4px rgba(0,0,0,.04)", display:"flex", alignItems:"center", gap:14 }}>
+                        <div style={{ width:38, height:38, borderRadius:"50%", background:`hsl(${s.name.charCodeAt(0)*7%360},40%,70%)`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, color:"white", flexShrink:0 }}>
+                          {s.name[0].toUpperCase()}
+                        </div>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+                            <span style={{ fontWeight:600, fontSize:14, color:C.label }}>{s.name}</span>
+                            {prog.isComplete
+                              ? <span style={{ background:"rgba(52,199,89,.12)", color:C.green, borderRadius:20, padding:"2px 10px", fontSize:11, fontWeight:700 }}>✓ Complete</span>
+                              : <span style={{ fontSize:12, color:C.muted, fontWeight:500 }}>{overall}%</span>}
+                          </div>
+                          {prog.talmudTotal > 0 && (
+                            <div style={{ marginBottom:prog.ksaTotal>0?6:0 }}>
+                              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                                <span style={{ fontSize:11, color:C.muted }}>Talmud segments</span>
+                                <span style={{ fontSize:11, color:prog.talmudDone===prog.talmudTotal?C.green:C.muted, fontWeight:600 }}>{prog.talmudDone}/{prog.talmudTotal}</span>
+                              </div>
+                              <div style={{ height:5, background:"rgba(0,0,0,.07)", borderRadius:99, overflow:"hidden" }}>
+                                <div style={{ height:"100%", width:`${prog.talmudTotal>0?(prog.talmudDone/prog.talmudTotal)*100:0}%`, background:prog.talmudDone===prog.talmudTotal?C.green:C.brown, borderRadius:99, transition:"width .3s" }} />
+                              </div>
+                            </div>
+                          )}
+                          {prog.ksaTotal > 0 && (
+                            <div>
+                              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                                <span style={{ fontSize:11, color:C.muted }}>KSA simanim</span>
+                                <span style={{ fontSize:11, color:prog.ksaDone===prog.ksaTotal?C.green:C.muted, fontWeight:600 }}>{prog.ksaDone}/{prog.ksaTotal}</span>
+                              </div>
+                              <div style={{ height:5, background:"rgba(0,0,0,.07)", borderRadius:99, overflow:"hidden" }}>
+                                <div style={{ height:"100%", width:`${prog.ksaTotal>0?(prog.ksaDone/prog.ksaTotal)*100:0}%`, background:prog.ksaDone===prog.ksaTotal?C.green:C.gold, borderRadius:99, transition:"width .3s" }} />
+                              </div>
+                            </div>
+                          )}
+                          {prog.talmudTotal === 0 && prog.ksaTotal === 0 && (
+                            <div style={{ fontSize:12, color:C.muted }}>Not started</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Assignment preview sheet */}
+      {previewAssignment && (
+        <div onClick={() => setPreviewAssignment(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:"#F5F0EB", borderRadius:"20px 20px 0 0", padding:"24px 20px 40px", width:"100%", maxWidth:720, maxHeight:"80vh", overflowY:"auto" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+              <div>
+                <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.06em", textTransform:"uppercase", fontWeight:500, marginBottom:4 }}>Student View Preview</div>
+                <div style={{ fontWeight:700, fontSize:18, color:C.label }}>{previewAssignment.title}</div>
+              </div>
+              <button onClick={() => setPreviewAssignment(null)} style={{ background:"none", border:"none", fontSize:22, cursor:"pointer", color:C.muted, lineHeight:1 }}>×</button>
+            </div>
+            {previewAssignment.dueDate && (
+              <div style={{ fontSize:13, fontWeight:600, color:C.gold, marginBottom:16 }}>
+                Due {new Date(previewAssignment.dueDate + "T12:00:00").toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" })}
+              </div>
+            )}
+            {/* KSA section */}
+            {previewAssignment.assignmentData?.ksa && (
+              <div style={{ marginBottom:20 }}>
+                <div style={{ fontWeight:700, fontSize:15, color:C.label, marginBottom:8 }}>Kitzur Shulchan Aruch</div>
+                {previewAssignment.assignmentData.ksa.all
+                  ? <div style={{ fontSize:13, color:C.muted }}>All Simanim</div>
+                  : <div style={{ fontSize:13, color:C.muted }}>Simanim {Math.min(...previewAssignment.assignmentData.ksa.simanim)}–{Math.max(...previewAssignment.assignmentData.ksa.simanim)}</div>}
+              </div>
+            )}
+            {/* Talmud section */}
+            {previewAssignment.assignmentData?.talmud?.masechet && (() => {
+              const t = previewAssignment.assignmentData.talmud;
+              const segLabel = t.fromSeg ? (t.toSeg ? `Segments ${t.fromSeg}–${t.toSeg}` : `From segment ${t.fromSeg}`) : "All segments";
+              return (
+                <div>
+                  <div style={{ fontWeight:700, fontSize:15, color:C.label, marginBottom:8 }}>תלמוד</div>
+                  <div style={{ background:"white", borderRadius:14, padding:"20px 18px", boxShadow:"0 1px 4px rgba(0,0,0,.05)", display:"flex", alignItems:"center", gap:16 }}>
+                    <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:28, fontWeight:700, color:C.label }}>{t.masechet}</div>
+                    <div>
+                      <div style={{ fontWeight:600, fontSize:15, color:C.label }}>{t.masechet}</div>
+                      <div style={{ fontSize:13, color:C.muted }}>{t.daf} · {segLabel}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
       )}
 
       {/* Chat tab */}
