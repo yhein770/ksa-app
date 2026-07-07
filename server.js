@@ -39,14 +39,15 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
     const form = new FormDataNode();
     const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
     form.set('file', blob, 'audio.webm');
-    form.set('model', 'whisper-1');
+    // Model is now controlled by the client; defaults to whisper-1 so existing
+    // app calls behave exactly as before. The test bench sends gpt-4o-mini-transcribe.
+    form.set('model', req.body.model || 'whisper-1');
     form.set('temperature', '0');
     if (req.body.language) form.set('language', req.body.language);
-    if (req.body.prompt) {
-      // Repeating the prompt doubles the vocabulary bias toward the expected text
-      const p = req.body.prompt;
-      form.set('prompt', req.body.language === 'he' ? `${p} ${p}` : p);
-    }
+    // Prompt forwarded as-is. The old Hebrew prompt-doubling is removed: it
+    // amplified prompt-echo (Whisper "transcribing" reference text that was
+    // never spoken), which inflated kriah scores unpredictably.
+    if (req.body.prompt) form.set('prompt', req.body.prompt);
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
@@ -80,6 +81,8 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
     if (!fileId) throw new Error("Soniox file upload failed: " + JSON.stringify(uploadData));
 
     // Step 2: Create transcription
+    // language_hints now includes both — Soniox handles code-switched audio,
+    // so this endpoint doubles as a mixed Hebrew/English fallback (plan C).
     const transcriptRes = await fetch('https://api.soniox.com/v1/transcriptions', {
       method: 'POST',
       headers: {
@@ -89,7 +92,7 @@ app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
       body: JSON.stringify({
         file_id: fileId,
         model: 'stt-async-v4',
-        language_hints: ['he'],
+        language_hints: ['he', 'en'],
       })
     });
     const transcriptData = await transcriptRes.json();
