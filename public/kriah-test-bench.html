@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kriah Grading Test Bench</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --label:#1d1d1f; --muted:#6e6e73;
+    --blue:#007aff; --green:#34c759; --red:#ff3b30; --amber:#ff9f0a;
+    --line:rgba(0,0,0,.08);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--label);padding:24px 16px 80px;font-size:15px;line-height:1.5}
+  .wrap{max-width:820px;margin:0 auto}
+  h1{font-size:22px;font-weight:700;margin-bottom:4px}
+  .sub{color:var(--muted);font-size:14px;margin-bottom:24px}
+  .card{background:var(--card);border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  .step{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
+  .stepnum{background:var(--label);color:#fff;border-radius:50%;width:22px;height:22px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:none;transform:translateY(-1px)}
+  .steptitle{font-size:16px;font-weight:600}
+  label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin:12px 0 4px;text-transform:uppercase;letter-spacing:.4px}
+  textarea,input[type=text]{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:#fafafa;resize:vertical}
+  textarea:focus,input:focus{outline:none;border-color:var(--blue);background:#fff}
+  .he{font-family:'Heebo',sans-serif;direction:rtl;text-align:right;font-size:17px;line-height:2}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  button{border:none;border-radius:980px;padding:10px 20px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit;background:#fff;border:1px solid var(--line);color:var(--label);box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  button:disabled{opacity:.45;cursor:default}
+  button.primary{background:var(--blue);color:#fff;border-color:transparent}
+  button.danger{background:rgba(255,59,48,.08);color:var(--red);border-color:rgba(255,59,48,.2)}
+  button.rec{background:var(--red);color:#fff;border-color:transparent}
+  .pill{display:inline-block;border-radius:20px;padding:2px 10px;font-size:11px;font-weight:600}
+  .pill.read,.pill.matched{background:rgba(52,199,89,.12);color:#1d7a35}
+  .pill.partial{background:rgba(255,159,10,.14);color:#9a6200}
+  .pill.missing{background:rgba(255,59,48,.1);color:#b3261e}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;white-space:pre-wrap;word-break:break-word}
+  .keytable{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  .keytable td{padding:4px 8px;border-bottom:1px solid var(--line)}
+  .keytable td.he{font-size:15px}
+  .scores{display:flex;gap:12px;margin:12px 0}
+  .scorebox{flex:1;background:#fafafa;border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center}
+  .scorebox .n{font-size:28px;font-weight:700}
+  .scorebox .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .pairrow{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fafafa}
+  .pairrow .heline{font-family:'Heebo',sans-serif;direction:rtl;text-align:right;font-size:16px;margin-bottom:2px}
+  .pairrow .enline{font-size:13px;color:var(--muted);margin-bottom:6px}
+  .pairrow .heard{font-size:12px;color:var(--muted);font-style:italic}
+  .status{font-size:13px;color:var(--muted);margin-top:8px;min-height:18px}
+  .status.err{color:var(--red)}
+  .runrow{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding:8px 0;font-size:13px}
+  .runrow .rl{font-weight:600;min-width:130px}
+  .runrow .rs{color:var(--muted);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  details{margin-top:10px}
+  summary{cursor:pointer;font-size:13px;color:var(--blue);font-weight:500}
+  .hint{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Kriah Grading Test Bench</h1>
+  <div class="sub">Record → Whisper (English, no prompt) → closed-vocabulary judge → scores. Save runs as a regression set and re-run them after every prompt tweak.</div>
+
+  <!-- STEP 0: setup -->
+  <div class="card">
+    <div class="step"><span class="stepnum">1</span><span class="steptitle">Reference text</span></div>
+    <div class="row" style="margin-top:0">
+      <select id="randSrc" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:14px;font-family:inherit;background:#fafafa">
+        <option value="any">Any source</option>
+        <option value="chumash">Chumash</option>
+        <option value="kitzur">Kitzur Shulchan Aruch</option>
+        <option value="talmud">Talmud Bavli</option>
+      </select>
+      <button class="primary" id="btnRandom">🎲 Random reference</button>
+      <span class="status" id="randStatus"></span>
+    </div>
+    <label>Hebrew / Aramaic reference</label>
+    <textarea id="heText" class="he" rows="3">מֵאֵימָתַי קוֹרִין אֶת שְׁמַע בְּעַרְבִית מִשָּׁעָה שֶׁהַכֹּהֲנִים נִכְנָסִים לֶאֱכֹל בִּתְרוּמָתָן</textarea>
+    <label>English translation (answer key)</label>
+    <textarea id="enText" rows="2">From when does one recite Shema in the evening? From the time when the priests enter to partake of their terumah.</textarea>
+    <label>Alignment pairs JSON (optional — paste your getAlignment output; leave empty to grade as one block)</label>
+    <textarea id="pairsJson" rows="2" class="mono" placeholder='[{"he":"מֵאֵימָתַי קוֹרִין","en":"From when does one recite"}, ...]'></textarea>
+    <div class="row">
+      <button class="primary" id="btnKey">Build word key</button>
+      <span class="status" id="keyStatus"></span>
+    </div>
+    <div id="keyOut"></div>
+  </div>
+
+  <!-- STEP 2: record -->
+  <div class="card">
+    <div class="step"><span class="stepnum">2</span><span class="steptitle">Record and transcribe</span></div>
+    <div class="hint">Read the Hebrew aloud, translating phrase by phrase, exactly like a student would. For your regression set do three takes: a clean read, one with two deliberately butchered words, one with a skipped phrase and a wrong translation.</div>
+    <div class="row">
+      <button class="primary" id="btnDictate">🎤 Dictate (device engine)</button>
+      <button id="btnRec">● Record → Whisper</button>
+      <button id="btnUpload">Upload audio file</button>
+      <input type="file" id="fileInput" accept="audio/*" style="display:none">
+      <span class="status" id="recStatus"></span>
+    </div>
+    <label>Raw transcript (editable — this is the mush)</label>
+    <textarea id="transcript" rows="4" class="mono" placeholder="Whisper output appears here..."></textarea>
+  </div>
+
+  <!-- STEP 3: judge -->
+  <div class="card">
+    <div class="step"><span class="stepnum">3</span><span class="steptitle">Judge</span></div>
+    <div class="row">
+      <button class="primary" id="btnJudge">Run judge</button>
+      <button id="btnCopy">Copy full prompt</button>
+      <button id="btnDebug" disabled>📋 Copy debug report</button>
+      <span class="status" id="judgeStatus"></span>
+    </div>
+    <div id="results"></div>
+    <details id="debugWrap" style="display:none">
+      <summary>Full debug report (everything for this run — paste into Claude)</summary>
+      <div class="hint">Captured from the last judge run: all inputs, the exact prompt sent, the raw model reply, the parsed JSON, and the score math. Edit freely before copying.</div>
+      <textarea id="debugOut" rows="18" class="mono"></textarea>
+    </details>
+    <details>
+      <summary>Edit judging prompt template</summary>
+      <div class="hint">Placeholders: {KEY} {PAIRS} {TRANSCRIPT}. Tweak, then re-run the regression set below to see if the change helped or hurt.</div>
+      <textarea id="promptTpl" rows="16" class="mono"></textarea>
+    </details>
+  </div>
+
+  <!-- STEP 4: regression set -->
+  <div class="card">
+    <div class="step"><span class="stepnum">4</span><span class="steptitle">Regression set</span></div>
+    <div class="row">
+      <input type="text" id="runLabel" placeholder="Label, e.g. clean read / butchered 2 words / skipped phrase" style="flex:1;min-width:200px">
+      <button id="btnSave">Save current transcript</button>
+    </div>
+    <div id="runs"></div>
+    <div class="row">
+      <button class="primary" id="btnRerun">Re-run all with current prompt</button>
+      <button class="danger" id="btnClear">Clear set</button>
+    </div>
+    <div id="rerunOut"></div>
+  </div>
+
+  <div class="hint">If requests fail with a CORS error, this file needs to be served from your Firebase site (drop it in <span class="mono">public/</span> and deploy) or your Railway proxy needs <span class="mono">Access-Control-Allow-Origin</span> opened up temporarily.</div>
+</div>
+
+<script>
+const WHISPER_URL = "https://ksa-app-production.up.railway.app/api/whisper";
+const CLAUDE_URL  = "https://ksa-app-production.up.railway.app/api/claude";
+
+const $ = id => document.getElementById(id);
+let wordKey = null, mediaRecorder = null, chunks = [], lastJudge = null;
+
+// ── deterministic reading aligner ─────────────────────────────────────────
+function alignNorm(s){return (s||"").toLowerCase().replace(/[’'`\-–—]/g,"").replace(/[^a-z]/g,"");}
+function alignSkel(s){return alignNorm(s).replace(/ch|kh/g,"k").replace(/ph|f/g,"f").replace(/th/g,"s").replace(/[aeiouhwy]/g,"");}
+function alignDist(a,b){const m=a.length,n=b.length;if(!m)return n;if(!n)return m;
+  const d=Array.from({length:m+1},(_,i)=>[i,...Array(n).fill(0)]);
+  for(let j=0;j<=n;j++)d[0][j]=j;
+  for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)
+    d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
+  return d[m][n];}
+function alignSim(a,b){const fa=alignNorm(a),fb=alignNorm(b),sa=alignSkel(a),sb=alignSkel(b);
+  const full=1-alignDist(fa,fb)/Math.max(fa.length,fb.length,1);
+  const skel=1-alignDist(sa,sb)/Math.max(sa.length,sb.length,1);
+  return Math.max(full,skel*0.95);}
+function bestSim(trs, s){ const list = Array.isArray(trs) ? trs : [trs]; return Math.max(...list.map(t => alignSim(t, s))); }
+function primaryTr(trs){ return Array.isArray(trs) ? trs[0] : trs; }
+function alignTokens(keyWords,tokens,threshold){
+  const K=keyWords.length,T=tokens.length;
+  const dp=Array.from({length:K+1},()=>Array(T+1).fill(-Infinity));
+  const bt=Array.from({length:K+1},()=>Array(T+1).fill(null));
+  dp[0][0]=0;
+  for(let i=0;i<=K;i++)for(let j=0;j<=T;j++){
+    if(dp[i][j]===-Infinity)continue;const cur=dp[i][j];
+    if(i<K&&cur>dp[i+1][j]){dp[i+1][j]=cur;bt[i+1][j]=[i,j,"skipKey"];}
+    if(j<T&&cur>dp[i][j+1]){dp[i][j+1]=cur;bt[i][j+1]=[i,j,"skipTok"];}
+    if(i<K&&j<T){const s=bestSim(keyWords[i].tr,tokens[j]);
+      if(s>=threshold&&cur+s>dp[i+1][j+1]){dp[i+1][j+1]=cur+s;bt[i+1][j+1]=[i,j,"match",[i],s];}}
+    if(i<K&&j+1<T){const s=bestSim(keyWords[i].tr,tokens[j]+tokens[j+1]);
+      if(s>=threshold&&cur+s>dp[i+1][j+2]){dp[i+1][j+2]=cur+s;bt[i+1][j+2]=[i,j,"split",[i],s];}}
+ if(i+1<K&&j<T){const combo=primaryTr(keyWords[i].tr)+primaryTr(keyWords[i+1].tr);
+      const s=alignSim(combo,tokens[j]);
+      const lenOk=tokens[j].length>=0.75*alignNorm(combo).length;
+      if(lenOk&&s>=Math.max(threshold,0.6)&&cur+2*s>dp[i+2][j+1]){dp[i+2][j+1]=cur+2*s;bt[i+2][j+1]=[i,j,"merge",[i,i+1],s];}}
+  }
+  let bj=0;for(let j=0;j<=T;j++)if(dp[K][j]>dp[K][bj])bj=j;
+  const matched=new Map();let i=K,j=bj;
+  while(i>0||j>0){const step=bt[i][j];if(!step)break;
+    const[pi,pj,op,keyIdxs,s]=step;
+    if(op==="match"||op==="split"||op==="merge")keyIdxs.forEach(k=>matched.set(k,s));
+    i=pi;j=pj;}
+  return matched;}
+const PREFIX_SOUNDS = {"ו":"v","ב":"b","ל":"l","מ":"mi","כ":"k","ה":"ha","ש":"she"};
+function applyShemOverrides(wordKey){
+  return wordKey.map(w => {
+    const stripped = (w.he||"").replace(/[֑-ׇ]/g,"").replace(/[^א-ת]/g,"");
+    // shem havaya
+    let idx = stripped.indexOf("יהוה");
+    if (idx !== -1) {
+      const prefix = stripped.slice(0, idx).split("").map(c => PREFIX_SOUNDS[c] ?? "").join("");
+      return {...w, tr: [prefix+"Hashem", prefix+"Adonoy", prefix+"Adoshem"]};
+    }
+    // Elokim-family (אלהים, אלהינו, אלהיך...) — students say the k-form
+    idx = stripped.indexOf("אלהי");
+    if (idx !== -1 && Array.isArray(w.tr) === false) {
+      const kForm = w.tr.replace(/loh/i, "lok").replace(/lohi/i, "loki");
+      if (kForm !== w.tr) return {...w, tr: [kForm, w.tr]};
+    }
+    return w;
+  });
+}
+function alignReading(readingText,translationText,keyWords,opts={}){
+  const threshold=opts.threshold??0.45,strict=opts.strict??0.72;
+  const tokens=(readingText||"").split(/\s+/).map(alignNorm).filter(t=>t.length>0);
+  const matched=alignTokens(keyWords,tokens,threshold);
+  if(matched.size>0&&translationText){
+    const tTokens=translationText.split(/\s+/).map(alignNorm).filter(Boolean);
+    keyWords.map(w=>w.i).filter(i=>!matched.has(i)).forEach(i=>{
+      if(!(matched.has(i-1)||matched.has(i+1)))return;
+      for(let j=0;j<tTokens.length;j++){
+        const s1=bestSim(keyWords[i].tr,tTokens[j]);
+        const s2=j+1<tTokens.length?bestSim(keyWords[i].tr,tTokens[j]+tTokens[j+1]):0;
+        if(Math.max(s1,s2)>=strict){matched.set(i,Math.max(s1,s2));break;}}});}
+  const matchedIdxs=[...matched.keys()].sort((a,b)=>a-b);
+  const heScore=keyWords.length?Math.round(matchedIdxs.length/keyWords.length*100):100;
+  const heReadLabel=matchedIdxs.length===keyWords.length?"read":matchedIdxs.length>0?"partial":"missing";
+  return{matched:matchedIdxs,heScore,heReadLabel,
+    perWord:keyWords.map(w=>({i:w.i,he:w.he,tr:w.tr,read:matched.has(w.i),confidence:matched.get(w.i)??0}))};}
+
+const DEFAULT_TPL = `A student read a Hebrew/Aramaic text aloud phrase by phrase, translating into English as they went. The recording was transcribed by an ENGLISH speech recognizer, so every Hebrew word appears as phonetic English gibberish (e.g. "may I'm a sigh coring is shema" for "mei'eimosai korin es shema"). The English translation parts are transcribed normally.
+
+REFERENCE WORDS (numbered, with expected Ashkenazi pronunciation):
+{KEY}
+
+PHRASE PAIRS (the answer key):
+{PAIRS}
+
+RAW TRANSCRIPT:
+"{TRANSCRIPT}"
+
+Your task has two parts:
+
+1. SEGMENT the transcript in order into spans, each labeled "reading" or "translation":
+   - "reading" = the student sounding out the Hebrew/Aramaic words (phonetic gibberish that tracks the reference words' pronunciation).
+   - "translation" = the student speaking English to convey the meaning. A lone Hebrew/Aramaic loanword inside English syntax ("the Kohanim eat terumah") is TRANSLATION, not reading.
+   Cover the WHOLE transcript in order; do not drop or reorder text. A student typically reads a Hebrew phrase, then translates it, then reads the next phrase, and so on.
+
+2. For each phrase pair, judge whether the student's spoken English conveyed the pair's meaning. Lenient: synonyms, paraphrase, gist, or the Hebrew/Aramaic term itself all count as "matched". "partial" if some of the pair's meaning came through. "missing" only if clearly absent. Do not penalize style, brevity, or word choice. Verdict boundaries: "matched" = all of the pair's substantive concepts conveyed. "partial" = at least one substantive concept conveyed AND at least one substantive concept absent (e.g. said "checked two times" but never the time period → partial, NOT missing). "missing" = none of the pair's meaning spoken in English anywhere. A "substantive concept" is a unit of meaning — who, what, when, how many, which object — NOT grammatical nuance, register, possessives, articles, or word choice ("one of the public" fully conveys "belonging to a group" → matched). If the only thing you can name as absent is a nuance rather than a concept, the verdict is "matched". Also give heRead ("read"/"partial"/"missing") as your impression of whether the pair's Hebrew words were sounded out.
+
+Do NOT try to match individual Hebrew words to indices yourself — a separate deterministic aligner scores the reading from the "reading" spans you label.
+
+Return ONLY JSON, no markdown:
+{"segments":[{"type":"reading","text":"..."},{"type":"translation","text":"..."}],
+ "pairs":[{"idx":0,"heRead":"read","heard":"short quote of the reading span for this pair","translation":"matched","transHeard":"what they said for it"}]}`;
+
+$("promptTpl").value = localStorage.getItem("ktb_tpl") || DEFAULT_TPL;
+$("promptTpl").addEventListener("input", () => localStorage.setItem("ktb_tpl", $("promptTpl").value));
+
+function stripNikud(s){return s.replace(/[\u0591-\u05C7]/g,"").replace(/[^\u05D0-\u05EA\s]/g,"").trim();}
+
+async function callClaude(user, system, max=4500){
+  const r = await fetch(CLAUDE_URL,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:max,temperature:0,system,messages:[{role:"user",content:user}]})});
+  const d = await r.json();
+  if(!d?.content?.[0]?.text) throw new Error("Claude returned no content: "+JSON.stringify(d).slice(0,200));
+  return d.content[0].text;
+}
+function parseJson(raw){return JSON.parse(raw.replace(/```json|```/g,"").trim());}
+
+// ── word key ──────────────────────────────────────────────────────────────
+$("btnKey").onclick = async () => {
+  const heText = $("heText").value.trim();
+  const words = heText.split(/\s+/).filter(w=>/[\u05D0-\u05EA]/.test(w));
+  if(!words.length){ $("keyStatus").textContent="No Hebrew words found."; return; }
+  const cacheKey = "ktb_key_" + stripNikud(heText).slice(0,120);
+  const cached = localStorage.getItem(cacheKey);
+  if(cached){ wordKey = JSON.parse(cached); renderKey(); $("keyStatus").textContent="Loaded from cache."; return; }
+  $("keyStatus").textContent="Generating transliterations...";
+  try{
+    const raw = await callClaude(
+      `Transliterate each numbered Hebrew/Aramaic word into ASHKENAZI pronunciation (sav for tav without dagesh, "oi"/"o" for cholam, kamatz as "o", typical yeshiva reading). Give the most likely casual spoken rendering.\n\nFor the shem havaya (יהוה) students say "Hashem" (with any attached prefix, e.g. וַיהוָה = "vaHashem"). For the Elokim-family (אלהים, אלהינו, אלהיך...) students say the k-form ("Elokim", "Elokeinu", "Elokecha").\n\n` +
+      words.map((w,i)=>`${i}. ${w}`).join("\n") +
+      `\n\nReturn ONLY JSON: [{"i":0,"tr":"..."}] — one entry per word, same order.`,
+      "You transliterate Hebrew/Aramaic into Ashkenazi pronunciation. Output ONLY valid JSON.", 2000);
+    const parsed = parseJson(raw);
+    wordKey = words.map((w,i)=>({i,he:w,tr:(parsed.find(p=>p.i===i)?.tr||stripNikud(w))}));
+    localStorage.setItem(cacheKey, JSON.stringify(wordKey));
+    renderKey(); $("keyStatus").textContent="Done.";
+  }catch(e){ $("keyStatus").className="status err"; $("keyStatus").textContent=e.message; }
+};
+function renderKey(){
+  $("keyOut").innerHTML = "<table class='keytable'>" + wordKey.map(w=>
+    `<tr><td style="color:var(--muted)">${w.i}</td><td class="he">${w.he}</td><td class="mono">${w.tr}</td></tr>`).join("") + "</table>";
+}
+
+// ── random reference from Sefaria ───────────────────────────────────────────
+const CHUMASH = [
+  {sefaria:"Genesis",perakim:50},{sefaria:"Exodus",perakim:40},{sefaria:"Leviticus",perakim:27},
+  {sefaria:"Numbers",perakim:36},{sefaria:"Deuteronomy",perakim:34}
+];
+const MASECHTOT = [
+  ["Berakhot",64],["Shabbat",157],["Eruvin",105],["Pesachim",121],["Yoma",88],["Sukkah",56],
+  ["Beitzah",40],["Rosh Hashanah",35],["Taanit",31],["Megillah",32],["Moed Katan",29],["Chagigah",27],
+  ["Yevamot",122],["Ketubot",112],["Nedarim",91],["Nazir",66],["Sotah",49],["Gittin",90],["Kiddushin",82],
+  ["Bava Kamma",119],["Bava Metzia",119],["Bava Batra",176],["Sanhedrin",113],["Makkot",24],["Shevuot",49],
+  ["Avodah Zarah",76],["Horayot",14],["Zevachim",120],["Menachot",110],["Chullin",142],["Bekhorot",61],
+  ["Arakhin",34],["Temurah",34],["Keritot",28],["Meilah",22],["Tamid",33],["Niddah",73]
+];
+const rint = n => Math.floor(Math.random()*n);
+const pick = a => a[rint(a.length)];
+function cleanHe(s){ return String(s).replace(/<[^>]*>/g,"").replace(/&thinsp;/g,"").replace(/&nbsp;/g," ").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&#[0-9]+;/g,"").replace(/\{[פס]\}/g,"").replace(/\s+/g," ").trim(); }
+const cleanEnChumash = s => String(s).replace(/<[^>]*>/g,"").replace(/&nbsp;/g," ").replace(/\s+/g," ").trim();
+const cleanEnKitzur  = s => String(s).replace(/<sup[^>]*>[\s\S]*?<\/sup>/gi,"").replace(/<i[^>]*class="footnote"[^>]*>[\s\S]*?<\/i>/gi,"").replace(/<[^>]*>/g,"").replace(/\s*\b[a-z]\b\s*/g," ").replace(/\s+/g," ").trim();
+const cleanEnTalmud  = s => String(s).replace(/<[^>]*>/g,"").replace(/\s+/g," ").trim();
+
+async function fetchRef(){
+  const sel = $("randSrc").value;
+  const src = sel==="any" ? pick(["chumash","kitzur","talmud"]) : sel;
+  let url, ref, cleanEn;
+  if(src==="chumash"){
+    const b = pick(CHUMASH), perek = 1+rint(b.perakim);
+    url = `https://www.sefaria.org/api/texts/${b.sefaria}.${perek}?commentary=0&context=0&pad=0`;
+    ref = `${b.sefaria} ${perek}`; cleanEn = cleanEnChumash;
+  } else if(src==="kitzur"){
+    const siman = 1+rint(221);
+    url = `https://www.sefaria.org/api/texts/Kitzur_Shulchan_Aruch.${siman}?commentary=0&context=0&pad=0`;
+    ref = `Kitzur Shulchan Aruch ${siman}`; cleanEn = cleanEnKitzur;
+  } else {
+    const m = pick(MASECHTOT), daf = (2+rint(m[1]-1)) + (Math.random()<.5?"a":"b");
+    url = `https://www.sefaria.org/api/texts/${m[0]}.${daf}?commentary=0&context=0&pad=0`;
+    ref = `${m[0]} ${daf}`; cleanEn = cleanEnTalmud;
+  }
+  const d = await (await fetch(url)).json();
+  const heArr = Array.isArray(d.he) ? d.he : (d.he ? [d.he] : []);
+  const enArr = Array.isArray(d.text) ? d.text : (d.text ? [d.text] : []);
+  const items = heArr.map((he,i)=>({he:cleanHe(he), en:cleanEn(enArr[i]||"")})).filter(x=>x.he && x.en);
+  return {items, ref};
+}
+
+$("btnRandom").onclick = async () => {
+  $("btnRandom").disabled = true;
+  $("randStatus").className="status"; $("randStatus").textContent="Fetching from Sefaria…";
+  try{
+    let chosen=null, ref="", tries=0;
+    while(!chosen && tries<7){
+      tries++;
+      const {items, ref:r} = await fetchRef();
+      if(!items.length) continue;
+      const good = items.filter(x=>{ const n=x.he.split(/\s+/).length; return n>=4 && n<=28; });
+      chosen = pick(good.length ? good : items); ref = r;
+    }
+    if(!chosen) throw new Error("No passage found after several tries — click again.");
+    $("heText").value = chosen.he;
+    $("enText").value = chosen.en;
+    $("pairsJson").value = "";
+    wordKey = null; $("keyOut").innerHTML=""; $("keyStatus").textContent="";
+    $("randStatus").textContent = `Loaded ${ref} · ${chosen.he.split(/\s+/).length} words. Now build the word key.`;
+  }catch(e){ $("randStatus").className="status err"; $("randStatus").textContent="Sefaria fetch failed: "+e.message; }
+  finally{ $("btnRandom").disabled=false; }
+};
+
+// ── device dictation (Web Speech API — Apple engine in Safari, Google in Chrome)
+let recog = null, dictating = false, finalText = "";
+$("btnDictate").onclick = () => {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ $("recStatus").className="status err"; $("recStatus").textContent="Web Speech not supported in this browser — use Safari or Chrome."; return; }
+  if(dictating){
+    dictating = false; recog.stop();
+    $("btnDictate").textContent="🎤 Dictate (device engine)"; $("btnDictate").classList.remove("rec");
+    $("recStatus").textContent="Dictation stopped.";
+    return;
+  }
+  recog = new SR();
+  recog.lang = "en-US";
+  recog.continuous = true;
+  recog.interimResults = true;
+  finalText = $("transcript").value.trim() ? $("transcript").value.trim()+" " : "";
+  recog.onresult = e => {
+    let interim = "";
+    for(let i=e.resultIndex; i<e.results.length; i++){
+      if(e.results[i].isFinal) finalText += e.results[i][0].transcript + " ";
+      else interim += e.results[i][0].transcript;
+    }
+    $("transcript").value = (finalText + interim).trim();
+  };
+  // Safari/iOS ends the session on pauses — restart while the user still wants to dictate
+  recog.onend = () => { if(dictating){ try{ recog.start(); }catch{} } };
+  recog.onerror = ev => {
+    if(ev.error === "not-allowed"){ dictating=false; $("recStatus").className="status err"; $("recStatus").textContent="Mic permission denied."; }
+  };
+  dictating = true;
+  recog.start();
+  $("btnDictate").textContent="■ Stop dictation"; $("btnDictate").classList.add("rec");
+  $("recStatus").className="status"; $("recStatus").textContent="Listening — read and translate, transcript builds live.";
+};
+
+// ── recording ─────────────────────────────────────────────────────────────
+$("btnRec").onclick = async () => {
+  if(mediaRecorder && mediaRecorder.state==="recording"){ mediaRecorder.stop(); return; }
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    mediaRecorder = new MediaRecorder(stream); chunks=[];
+    mediaRecorder.ondataavailable = e=>chunks.push(e.data);
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t=>t.stop());
+      $("btnRec").textContent="● Start recording"; $("btnRec").classList.remove("rec");
+      await transcribe(new Blob(chunks,{type:"audio/webm"}));
+    };
+    mediaRecorder.start();
+    $("btnRec").textContent="■ Stop"; $("btnRec").classList.add("rec");
+    $("recStatus").className="status"; $("recStatus").textContent="Recording...";
+  }catch(e){ $("recStatus").className="status err"; $("recStatus").textContent="Mic error: "+e.message; }
+};
+$("btnUpload").onclick = ()=>$("fileInput").click();
+$("fileInput").onchange = e => { if(e.target.files[0]) transcribe(e.target.files[0]); };
+
+async function transcribe(blob){
+  $("recStatus").className="status"; $("recStatus").textContent="Transcribing (gpt-4o-mini-transcribe)...";
+  try{
+    const fd = new FormData();
+    fd.append("audio", blob, "recording.webm");
+    fd.append("language","en");
+    fd.append("model","gpt-4o-mini-transcribe"); // Railway must forward this — see server snippet
+    fd.append("prompt","This recording mixes English with Hebrew and Aramaic read aloud in Ashkenazi pronunciation. Transcribe EVERYTHING. Never omit or skip the Hebrew/Aramaic words: render them phonetically in Latin letters as heard (e.g. 'mei'eimosai korin es shema'), even when they are not real English words. Do not translate them and do not drop them.");
+    const r = await fetch(WHISPER_URL,{method:"POST",body:fd});
+    const d = await r.json();
+    $("transcript").value = d.text || "";
+    $("recStatus").textContent = d.text ? "Transcript ready." : "Empty transcript returned — check that Railway forwards the model field.";
+  }catch(e){ $("recStatus").className="status err"; $("recStatus").textContent=e.message; }
+}
+
+// ── judging ───────────────────────────────────────────────────────────────
+async function makeGradingPairs(heText, enText) {
+  const cacheKey = "ktb_gpairs_" + stripNikud(heText).slice(0, 120);
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) { try { const p = JSON.parse(cached); if (Array.isArray(p) && p.length) return p; } catch { localStorage.removeItem(cacheKey); } }
+
+  const raw = await callClaude(
+`Split this Hebrew/Aramaic text and its English translation into aligned PHRASE pairs for grading a student's oral translation.
+
+HEBREW:
+${heText}
+
+ENGLISH:
+${enText}
+
+Rules:
+- Each pair = one coherent thought unit (a clause or phrase), typically 2-6 Hebrew words. Never single words unless the word stands alone as a thought (e.g. שׁוֹאֲלִים as a ruling).
+- Together the pairs must cover the ENTIRE Hebrew text in order, no gaps, no overlaps, no reordering.
+- The "he" values, concatenated in order, must reproduce the Hebrew text word-for-word (keep nikud/punctuation as given).
+- Each pair's "en" is the portion of the English that translates that Hebrew — rephrase minimally if the English order differs, but do not add or drop meaning.
+- Aim for 3-7 pairs for a text of this length.
+
+Return ONLY JSON: [{"he":"...","en":"..."}]`,
+    "You split aligned Hebrew/English texts into phrase pairs. Output ONLY valid JSON.",
+    2000
+  );
+  const pairs = parseJson(raw);
+  // integrity check: pair word count must equal text word count, else fall back to one block
+  const heWords = heText.split(/\s+/).filter(w => /[א-ת]/.test(w)).length;
+  const pairWords = pairs.reduce((s, p) => s + (p.he || "").split(/\s+/).filter(w => /[א-ת]/.test(w)).length, 0);
+  if (!Array.isArray(pairs) || !pairs.length || pairWords !== heWords) {
+    console.warn("Grading pairs failed integrity check, grading as one block", { heWords, pairWords });
+    return [];
+  }
+  localStorage.setItem(cacheKey, JSON.stringify(pairs));
+  return pairs;
+}
+async function getIndexedPairs(){
+  const heText = $("heText").value.trim(), enText = $("enText").value.trim();
+  let pairs = [];
+  try{ const p = JSON.parse($("pairsJson").value); if(Array.isArray(p)) pairs = p; }catch{}
+  if(!pairs.length) pairs = await makeGradingPairs(heText, enText);
+  if(!pairs.length) return [{idx:0,he:heText,en:enText,wordIdxs:wordKey.map(w=>w.i)}];
+  let cursor=0;
+  return pairs.map((p,idx)=>{
+    const count=(p.he||"").trim().split(/\s+/).filter(Boolean).length||1;
+    const idxs = wordKey.slice(cursor,cursor+count).map(w=>w.i);
+    cursor+=count;
+    return {idx,he:p.he,en:p.en,wordIdxs:idxs};
+  });
+}
+async function buildPrompt(transcript){
+  const ip = await getIndexedPairs();
+  return { prompt: $("promptTpl").value
+    .replace("{KEY}", wordKey.map(w=>`${w.i}. ${w.he} — "${w.tr}"`).join("\n"))
+    .replace("{PAIRS}", ip.map(p=>`${p.idx}. he: "${p.he}" (words ${p.wordIdxs.join(",")}) → en: "${p.en}"`).join("\n"))
+    .replace("{TRANSCRIPT}", transcript), ip };
+}
+const JUDGE_SYSTEM = "You are a precise kriah grading engine. Segment the transcript into reading vs translation spans and judge translation per phrase pair. Output ONLY valid JSON.";
+const JUDGE_MODEL = "claude-sonnet-4-6", JUDGE_MAXTOK = 4500;
+async function judge(transcript){
+  const {prompt, ip} = await buildPrompt(transcript);
+  const raw = await callClaude(prompt, JUDGE_SYSTEM, JUDGE_MAXTOK);
+  const judged = parseJson(raw);
+  if (!Array.isArray(judged.pairs) || !Array.isArray(judged.segments)) {
+    console.error("Judge returned unexpected shape:", raw);
+    throw new Error("Judge output missing 'pairs' or 'segments' — raw response logged to console");
+  }
+  const readingText = judged.segments.filter(s => s.type === "reading").map(s => s.text).join(" ");
+  const translationText = judged.segments.filter(s => s.type === "translation").map(s => s.text).join(" ");
+  const align = alignReading(readingText, translationText, applyShemOverrides(wordKey));
+  const heScore = align.heScore;
+  // verify translation verdicts against the actual transcript — unsupported evidence = missing
+const normText = s => (s||"").toLowerCase().replace(/[^a-z\s]/g," ").replace(/\s+/g," ").trim();
+const transNorm = normText(translationText);
+judged.pairs.forEach(p => {
+  if (p.translation === "matched") {
+    const words = normText(p.transHeard).split(" ").filter(w => w.length > 3);
+    const hits = words.filter(w => transNorm.includes(w)).length;
+    if (words.length && hits / words.length < 0.6) p.translation = "missing";
+  }
+});
+  const w = {matched:1,partial:.5,missing:0};
+  const enScore = Math.round(judged.pairs.reduce((s,p)=>s+(w[p.translation]??0),0)/(judged.pairs.length||1)*100);
+  return {judged, ip, heScore, enScore, align, readingText, translationText, prompt, system:JUDGE_SYSTEM, raw, transcript, matched:align.matched, weights:w};
+}
+
+$("btnJudge").onclick = async () => {
+  if(!wordKey){ $("judgeStatus").className="status err"; $("judgeStatus").textContent="Build the word key first."; return; }
+  const t = $("transcript").value.trim();
+  if(!t){ $("judgeStatus").className="status err"; $("judgeStatus").textContent="No transcript."; return; }
+  $("judgeStatus").className="status"; $("judgeStatus").textContent="Judging...";
+  try{
+    const res = await judge(t);
+    renderResults(res);
+    lastJudge = res;
+    $("debugOut").value = buildDebugReport(res);
+    $("btnDebug").disabled = false;
+    $("debugWrap").style.display = "block";
+    $("judgeStatus").textContent="Done.";
+  }catch(e){ $("judgeStatus").className="status err"; $("judgeStatus").textContent=e.message; }
+};
+$("btnCopy").onclick = async () => {
+  if(!wordKey){ $("judgeStatus").textContent="Build the word key first."; return; }
+  const {prompt} = await buildPrompt($("transcript").value.trim());
+  navigator.clipboard.writeText(prompt);
+  $("judgeStatus").textContent="Prompt copied — paste it into claude.ai to eyeball the judging.";
+};
+
+function pairKriah(align, wordIdxs){
+  if(!align || !Array.isArray(wordIdxs) || !wordIdxs.length) return null;
+  const m = wordIdxs.filter(i=>align.matched.includes(i)).length;
+  return m===wordIdxs.length ? "read" : m>0 ? "partial" : "missing";
+}
+function renderResults({judged, ip, heScore, enScore, align}){
+  const pairHtml = judged.pairs.map(p=>{
+    const ref = ip[p.idx]||{};
+    const kr = pairKriah(align, ref.wordIdxs) || p.heRead || "missing";
+    return `<div class="pairrow">
+      <div class="heline">${ref.he||""}</div>
+      <div class="enline">${ref.en||""}</div>
+      <span class="pill ${kr}">kriah: ${kr}</span>
+      <span class="pill ${p.translation}">translation: ${p.translation}</span>
+      <div class="heard">heard: "${p.heard||""}" → "${p.transHeard||""}"</div>
+    </div>`;
+  }).join("");
+  $("results").innerHTML = `
+    <div class="scores">
+      <div class="scorebox"><div class="n">${heScore}</div><div class="l">Hebrew read</div></div>
+      <div class="scorebox"><div class="n">${enScore}</div><div class="l">Translation</div></div>
+    </div>${pairHtml}
+    <details><summary>Raw JSON</summary><div class="mono">${JSON.stringify(judged,null,2).replace(/</g,"&lt;")}</div></details>`;
+}
+
+// ── full debug report ───────────────────────────────────────────────────────
+function buildDebugReport(res){
+  const {judged, ip, heScore, enScore, align, readingText, translationText, prompt, system, raw, transcript, matched, weights} = res;
+  const heText = $("heText").value.trim();
+  const enText = $("enText").value.trim();
+  const pairsRaw = $("pairsJson").value.trim();
+  const L = [];
+  const fence = (lang, body) => "```" + (lang||"") + "\n" + body + "\n```";
+
+  L.push("# Kriah Grading — Full Debug Report");
+  L.push("");
+  L.push("A student read a Hebrew/Aramaic text aloud, translating phrase by phrase. It was transcribed by an English speech recognizer, then graded by an LLM judge against a closed word list. Below is EVERYTHING for one run — every input, the exact prompt sent, the raw model reply, the parsed result, and how the scores were computed. Please explain what is going wrong and why.");
+  L.push("");
+
+  L.push("## 1. Endpoints & models");
+  L.push("- Transcription: `" + WHISPER_URL + "` — model `gpt-4o-mini-transcribe`, language `en`");
+  L.push("- Judge: `" + CLAUDE_URL + "` — model `" + JUDGE_MODEL + "`, max_tokens " + JUDGE_MAXTOK);
+  L.push("");
+
+  L.push("## 2. Reference text (Hebrew / Aramaic)");
+  L.push(fence("", heText));
+  L.push("## 3. Answer key (English translation)");
+  L.push(fence("", enText));
+  L.push("## 4. Alignment pairs JSON (as entered)");
+  L.push(pairsRaw ? fence("json", pairsRaw) : "_(empty — graded as one block)_");
+  L.push("");
+
+  L.push("## 5. Word key (reference words + Ashkenazi transliteration)");
+  L.push("| # | Hebrew | Transliteration |");
+  L.push("|---|--------|-----------------|");
+  (wordKey||[]).forEach(w => L.push(`| ${w.i} | ${w.he} | ${w.tr} |`));
+  L.push("");
+
+  L.push("## 6. Indexed phrase pairs (what the judge was told to check)");
+  L.push("| idx | Hebrew phrase | word indices | English |");
+  L.push("|-----|---------------|--------------|---------|");
+  ip.forEach(p => L.push(`| ${p.idx} | ${p.he||""} | ${(p.wordIdxs||[]).join(", ")} | ${p.en||""} |`));
+  L.push("");
+
+  L.push("## 7. Raw transcript sent to the judge (what the recognizer heard)");
+  L.push(fence("", transcript));
+  L.push("");
+
+  L.push("## 8. Exact judge request");
+  L.push("### System prompt");
+  L.push(fence("", system));
+  L.push("### User prompt (verbatim, with {KEY}/{PAIRS}/{TRANSCRIPT} filled in)");
+  L.push(fence("", prompt));
+  L.push("");
+
+  L.push("## 9. Raw model response (verbatim, before any parsing)");
+  L.push(fence("", raw));
+  L.push("");
+
+  L.push("## 10. Parsed judge JSON");
+  L.push(fence("json", JSON.stringify(judged, null, 2)));
+  L.push("");
+
+  L.push("## 11. Score computation");
+  L.push("### Hebrew reading score (deterministic aligner)");
+  L.push("The judge does NOT match Hebrew words. It only labels transcript spans as reading vs translation; a local edit-distance aligner then matches the 'reading' text against the word-key transliterations.");
+  L.push("**Reading text (from segments labeled \"reading\"):**");
+  L.push(fence("", readingText || "(none)"));
+  L.push("**Translation text (from segments labeled \"translation\"):**");
+  L.push(fence("", translationText || "(none)"));
+  L.push("- Reference words total: **" + (wordKey ? wordKey.length : 0) + "**");
+  L.push("- Word indices the aligner matched: **[" + matched.join(", ") + "]** (" + matched.length + " words)");
+  L.push("- heScore = round(matched / total × 100) = round(" + matched.length + " / " + (wordKey ? wordKey.length : 0) + " × 100) = **" + heScore + "**");
+  L.push("");
+  L.push("Per-word aligner result (confidence 0–1):");
+  L.push("| # | Hebrew | translit | matched? | confidence |");
+  L.push("|---|--------|----------|----------|------------|");
+  (align ? align.perWord : []).forEach(w => L.push(`| ${w.i} | ${w.he} | ${w.tr} | ${w.read?"yes":"no"} | ${w.confidence?w.confidence.toFixed(2):"—"} |`));
+  L.push("");
+  L.push("### Translation score");
+  L.push("- Weights: matched = " + weights.matched + ", partial = " + weights.partial + ", missing = " + weights.missing);
+  L.push("| idx | translation verdict | weight |");
+  L.push("|-----|---------------------|--------|");
+  let sum = 0;
+  judged.pairs.forEach(p => { const wv = weights[p.translation] ?? 0; sum += wv; L.push(`| ${p.idx} | ${p.translation} | ${wv} |`); });
+  L.push("- enScore = round(sum of weights / pair count × 100) = round(" + sum + " / " + judged.pairs.length + " × 100) = **" + enScore + "**");
+  L.push("");
+  L.push("## 12. Final scores");
+  L.push("- **Hebrew read: " + heScore + "**");
+  L.push("- **Translation: " + enScore + "**");
+
+  return L.join("\n");
+}
+
+$("btnDebug").onclick = () => {
+  if(!lastJudge){ $("judgeStatus").textContent="Run the judge first."; return; }
+  const report = $("debugOut").value || buildDebugReport(lastJudge);
+  navigator.clipboard.writeText(report);
+  $("judgeStatus").textContent="Debug report copied — paste it into Claude and ask what's going wrong.";
+};
+
+// ── regression set ────────────────────────────────────────────────────────
+function loadRuns(){ try{return JSON.parse(localStorage.getItem("ktb_runs")||"[]");}catch{return [];} }
+function saveRuns(r){ localStorage.setItem("ktb_runs", JSON.stringify(r)); renderRuns(); }
+function renderRuns(){
+  const runs = loadRuns();
+  $("runs").innerHTML = runs.length ? runs.map((r,i)=>
+    `<div class="runrow"><span class="rl">${r.label}</span><span class="rs">${r.transcript}</span>
+     <button data-i="${i}" class="loadRun">Load</button><button data-i="${i}" class="delRun danger">✕</button></div>`).join("")
+    : `<div class="hint">Nothing saved yet. Aim for three: clean read, butchered words, skipped phrase.</div>`;
+  document.querySelectorAll(".loadRun").forEach(b=>b.onclick=()=>{ $("transcript").value=loadRuns()[+b.dataset.i].transcript; });
+  document.querySelectorAll(".delRun").forEach(b=>b.onclick=()=>{ const r=loadRuns(); r.splice(+b.dataset.i,1); saveRuns(r); });
+}
+$("btnSave").onclick = () => {
+  const t=$("transcript").value.trim(), l=$("runLabel").value.trim()||("run "+(loadRuns().length+1));
+  if(!t) return;
+  const r=loadRuns(); r.push({label:l,transcript:t}); saveRuns(r); $("runLabel").value="";
+};
+$("btnClear").onclick = () => saveRuns([]);
+$("btnRerun").onclick = async () => {
+  if(!wordKey){ $("rerunOut").innerHTML="<div class='hint'>Build the word key first.</div>"; return; }
+  const runs = loadRuns();
+  if(!runs.length) return;
+  $("rerunOut").innerHTML="<div class='hint'>Running "+runs.length+" transcripts...</div>";
+  const rows=[];
+  for(const r of runs){
+    try{ const res = await judge(r.transcript);
+      rows.push(`<div class="runrow"><span class="rl">${r.label}</span><span>He <b>${res.heScore}</b></span><span>En <b>${res.enScore}</b></span></div>`);
+    }catch(e){ rows.push(`<div class="runrow"><span class="rl">${r.label}</span><span style="color:var(--red)">${e.message}</span></div>`); }
+    $("rerunOut").innerHTML = rows.join("");
+  }
+};
+renderRuns();
+</script>
+</body>
+</html>
