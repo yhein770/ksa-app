@@ -78,7 +78,7 @@
     <textarea id="heText" class="he" rows="3">מֵאֵימָתַי קוֹרִין אֶת שְׁמַע בְּעַרְבִית מִשָּׁעָה שֶׁהַכֹּהֲנִים נִכְנָסִים לֶאֱכֹל בִּתְרוּמָתָן</textarea>
     <label>English translation (answer key)</label>
     <textarea id="enText" rows="2">From when does one recite Shema in the evening? From the time when the priests enter to partake of their terumah.</textarea>
-    <label>Alignment pairs JSON (optional — paste your getAlignment output; leave empty to grade as one block)</label>
+    <label>Alignment pairs JSON (optional manual override — paste to force specific pairs; leave empty to auto-generate cached grading pairs, falling back to one block only if generation fails its integrity check)</label>
     <textarea id="pairsJson" rows="2" class="mono" placeholder='[{"he":"מֵאֵימָתַי קוֹרִין","en":"From when does one recite"}, ...]'></textarea>
     <div class="row">
       <button class="primary" id="btnKey">Build word key</button>
@@ -586,7 +586,7 @@ function buildDebugReport(res){
   L.push("## 3. Answer key (English translation)");
   L.push(fence("", enText));
   L.push("## 4. Alignment pairs JSON (as entered)");
-  L.push(pairsRaw ? fence("json", pairsRaw) : "_(empty — graded as one block)_");
+  L.push(pairsRaw ? fence("json", pairsRaw) : "_(empty — auto-generated cached grading pairs; one block only on integrity-check failure)_");
   L.push("");
 
   L.push("## 5. Word key (reference words + Ashkenazi transliteration)");
