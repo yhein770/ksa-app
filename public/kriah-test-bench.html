@@ -139,6 +139,17 @@
     <div id="rerunOut"></div>
   </div>
 
+  <!-- EXPERIMENTAL: nikkud (havara) checker — fully separate from grading -->
+  <div class="card" style="border:1px dashed var(--amber)">
+    <div class="step"><span class="stepnum" style="background:var(--amber)">✦</span><span class="steptitle">Nikkud check (experimental — does not affect grades)</span></div>
+    <div class="hint">Uses the most recent recording/upload plus the pointed reference text to judge vowel &amp; stress precision (havara). Runs independently of the grading flow above.</div>
+    <div class="row">
+      <button id="btnNikkud" disabled>Check nikkud</button>
+      <span class="status" id="nikkudStatus"></span>
+    </div>
+    <div id="nikkudOut"></div>
+  </div>
+
   <div class="hint">If requests fail with a CORS error, this file needs to be served from your Firebase site (drop it in <span class="mono">public/</span> and deploy) or your Railway proxy needs <span class="mono">Access-Control-Allow-Origin</span> opened up temporarily.</div>
 </div>
 
@@ -149,21 +160,7 @@ const GEMINI_URL  = "https://ksa-app-production.up.railway.app/api/gemini-audio"
 const KEEP_PROMPT = "This recording mixes English with Hebrew and Aramaic read aloud in Ashkenazi pronunciation. Transcribe EVERYTHING. Render the Hebrew/Aramaic phonetically in Latin letters as heard (e.g. 'mei'eimosai korin es shema'), even when they are not real English words. Do not translate them and do not drop them. The English translation parts are transcribed normally. Output ONLY the transcript.";
 
 const $ = id => document.getElementById(id);
-let wordKey = null, wordKeyText = null, mediaRecorder = null, chunks = [], lastJudge = null;
-
-// referee: how many word-key transliterations show up (consonant-skeleton trigram hit) in a transcript
-function keyHits(t){
-  if(!wordKey||!wordKey.length) return -1;
-  const T=(t||"").toLowerCase().replace(/[^a-z]/g,"").replace(/[aeiou]/g,"");
-  let hits=0;
-  for(const w of wordKey){
-    const tr=Array.isArray(w.tr)?w.tr[0]:w.tr;
-    const sk=tr.toLowerCase().replace(/[^a-z]/g,"").replace(/[aeiou]/g,"");
-    if(sk.length<3) continue;
-    for(let i=0;i+3<=sk.length;i++){ if(T.includes(sk.slice(i,i+3))){hits++;break;} }
-  }
-  return hits;
-}
+let wordKey = null, wordKeyText = null, mediaRecorder = null, chunks = [], lastJudge = null, lastAudioBlob = null;
 
 // ── deterministic reading aligner ─────────────────────────────────────────
 function alignNorm(s){return (s||"").toLowerCase().replace(/[’'`\-–—]/g,"").replace(/[^a-z]/g,"");}
@@ -438,8 +435,10 @@ $("btnUpload").onclick = ()=>$("fileInput").click();
 $("fileInput").onchange = e => { if(e.target.files[0]){ ensureWordKey().catch(()=>{}); transcribe(e.target.files[0]); } };
 
 async function transcribe(blob){
+  lastAudioBlob = blob;               // retain audio for the experimental nikkud check
+  updateNikkudBtn();
   $("recStatus").className="status"; $("recStatus").textContent="Transcribing (OpenAI + Gemini race)…";
-  // Word key must exist so the referee can score the two candidates.
+  // Word key must exist so the judge + aligner can score both transcripts.
   try{ await ensureWordKey(); }catch{}
 
   const mkFd = () => { const fd = new FormData(); fd.append("audio", blob, "recording.webm"); return fd; };
@@ -467,111 +466,74 @@ async function transcribe(blob){
     { name:"OpenAI · gpt-4o-mini", ok: oa.status==="fulfilled", text: oa.status==="fulfilled"?oa.value:"", err: oa.reason?.message||"failed" },
     { name:"Gemini",              ok: gm.status==="fulfilled", text: gm.status==="fulfilled"?gm.value:"", err: gm.reason?.message||"failed" },
   ];
-  vendors.forEach(v => { v.hits = v.ok ? keyHits(v.text) : -2; });   // failed request scores -2
-  // higher hit count wins; tie or missing word key → OpenAI (certified incumbent)
-  const geminiWins = vendors[1].hits > vendors[0].hits;
-  vendors[0].win = !geminiWins; vendors[1].win = geminiWins;
+  renderAbPanel(vendors);   // first paint: transcripts shown, judge scores pending
+  $("recStatus").className="status"; $("recStatus").textContent = "Transcribed — scoring both with the judge…";
 
-  $("transcript").value = geminiWins ? vendors[1].text : vendors[0].text;
-  renderAbPanel(vendors);   // first paint: key-hit counts, judge scores pending
-  $("recStatus").className="status";
-  $("recStatus").textContent = `${geminiWins?"Gemini":"OpenAI"} won on key hits (OpenAI ${vendors[0].hits} vs Gemini ${vendors[1].hits}). Scoring both…`;
-
-  // MEASURE: run each transcript through the same judge + aligner for real He/En scores,
-  // so we can see whether keyHits picked the transcript that actually grades best.
+  // Judge BOTH transcripts through the full judge + aligner. Winner is chosen from
+  // each vendor's OWN judge scores (He*0.6 + En*0.4) — no separate picking heuristic.
   try{ await getIndexedPairs(); }catch{}   // warm the grading-pairs cache so both judges reuse it
   await Promise.all(vendors.map(async v => {
     if(!v.ok || !v.text.trim()){ v.scored="skip"; return; }
-    try{ const res = await judge(v.text); v.res = res; v.he = res.heScore; v.en = res.enScore; v.scored="ok"; }
+    try{ const res = await judge(v.text); v.res = res; v.he = res.heScore; v.en = res.enScore; v.score = Math.round(res.heScore*0.6 + res.enScore*0.4); v.scored="ok"; }
     catch(e){ v.scored="err"; v.scoreErr = e.message; }
   }));
-  // FUSION: deterministic union of both vendors' results — no new LLM calls.
-  const oaRes = vendors[0].scored==="ok" ? vendors[0].res : null;
-  const gmRes = vendors[1].scored==="ok" ? vendors[1].res : null;
-  const fusion = (oaRes || gmRes) ? fuseResults(oaRes, gmRes) : null;
-  renderAbPanel(vendors, fusion);   // repaint with per-vendor scores + fusion headline
-  const fmt = v => v.scored==="ok" ? `He ${v.he}/En ${v.en}` : (v.ok ? "—" : "failed");
-  $("recStatus").textContent = fusion
-    ? `⚡ Fusion He ${fusion.fusedHe} / En ${fusion.fusedEn}  ·  OpenAI ${fmt(vendors[0])} · Gemini ${fmt(vendors[1])}`
-    : `${geminiWins?"Gemini":"OpenAI"} won on key hits — no judge scores available.`;
+
+  // Winner-takes-all: highest weighted score; tie → OpenAI (index 0, evaluated first).
+  let winner = null;
+  vendors.forEach(v => { if(v.scored==="ok" && (!winner || v.score > winner.score)) winner = v; });
+  vendors.forEach(v => { v.win = (v === winner); });
+  if(winner){
+    $("transcript").value = winner.text;
+    showHeadline(winner.res);   // winner's FULL result set becomes the bench headline
+  }
+  renderAbPanel(vendors);
+  const fmt = v => v.scored==="ok" ? `He ${v.he}/En ${v.en}` : (v.ok ? "score failed" : "failed");
+  $("recStatus").className="status";
+  $("recStatus").textContent = winner
+    ? `🏆 ${winner.name} wins (score ${winner.score}) — OpenAI ${fmt(vendors[0])}, Gemini ${fmt(vendors[1])}.`
+    : "Both transcripts failed to score.";
 }
 
-// Deterministic fusion of the two vendors' judge results (pure set/array math).
-// Reading: union of matched word indices. Translation: better verdict per pair.
-function fuseResults(oaRes, gmRes){
-  const RANK = { matched:3, partial:2, missing:1 };   // absent → missing
-  const NAME = { 3:"matched", 2:"partial", 1:"missing" };
-  const enW  = { matched:1, partial:.5, missing:0 };
-  const total = (wordKey && wordKey.length) ? wordKey.length : 1;
-
-  const oaM = (oaRes && oaRes.align && oaRes.align.matched) || [];
-  const gmM = (gmRes && gmRes.align && gmRes.align.matched) || [];
-  const oaSet = new Set(oaM), gmSet = new Set(gmM);
-  const fusedMatched = [...new Set([...oaM, ...gmM])].sort((a,b)=>a-b);
-  const both   = fusedMatched.filter(i => oaSet.has(i) && gmSet.has(i));
-  const onlyOA = fusedMatched.filter(i => oaSet.has(i) && !gmSet.has(i));
-  const onlyGM = fusedMatched.filter(i => gmSet.has(i) && !oaSet.has(i));
-  const fusedHe = Math.round(fusedMatched.length / total * 100);
-
-  // per-pair verdicts keyed by pair idx — take the better of the two vendors
-  const pairMap = new Map();
-  const collect = (res, key) => (res && res.judged && res.judged.pairs || []).forEach(p => {
-    if(p.idx == null) return;
-    if(!pairMap.has(p.idx)) pairMap.set(p.idx, { idx:p.idx, oa:null, gm:null });
-    pairMap.get(p.idx)[key] = p.translation || "missing";
-  });
-  collect(oaRes, "oa"); collect(gmRes, "gm");
-  const pairs = [...pairMap.values()].sort((a,b)=>a.idx-b.idx).map(p => ({
-    idx:p.idx, oa:p.oa, gm:p.gm, fused: NAME[Math.max(RANK[p.oa]||1, RANK[p.gm]||1)]
-  }));
-  const fusedEn = pairs.length ? Math.round(pairs.reduce((s,p)=>s+(enW[p.fused]??0),0)/pairs.length*100) : 0;
-
-  return { fusedHe, fusedEn, fusedMatched, both, onlyOA, onlyGM, pairs };
+// Push a judge result to the bench's main headline (scores, per-pair breakdown, debug).
+function showHeadline(res){
+  if(!res) return;
+  renderResults(res);
+  lastJudge = res;
+  $("debugOut").value = buildDebugReport(res);
+  $("btnDebug").disabled = false;
+  $("debugWrap").style.display = "block";
 }
 
 // Side-by-side vendor comparison rendered under the transcript box.
-function renderAbPanel(vendors, fusion){
+function renderAbPanel(vendors){
   let panel = $("abPanel");
   if(!panel){ panel = document.createElement("div"); panel.id = "abPanel"; $("transcript").insertAdjacentElement("afterend", panel); }
   const scoreCells = v => {
-    if(!v.ok) return "";
-    if(v.scored==="ok")  return `<span class="pill matched">He ${v.he}</span><span class="pill matched">En ${v.en}</span>`;
+    if(v.scored==="ok")  return `<span class="pill matched">He ${v.he}</span><span class="pill matched">En ${v.en}</span><span class="pill" style="background:rgba(0,0,0,.06);color:var(--muted)">score ${v.score}</span>`;
     if(v.scored==="err") return `<span class="pill missing" title="${(v.scoreErr||"").replace(/"/g,"&quot;")}">score failed</span>`;
-    if(v.scored==="skip") return "";
+    if(v.scored==="skip") return `<span class="pill missing">no transcript</span>`;
+    if(!v.ok) return "";
     return `<span class="pill partial">scoring…</span>`;   // judge still running
   };
-  const idxList = a => (a && a.length) ? a.join(", ") : "—";
-  const fusionCard = fusion ? `
-    <div class="pairrow" style="border:2px solid var(--blue);background:rgba(0,122,255,.07)">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <b style="font-size:15px">⚡ Fusion — union of both vendors</b>
-        <span class="pill matched" style="font-size:12px">He ${fusion.fusedHe}</span>
-        <span class="pill matched" style="font-size:12px">En ${fusion.fusedEn}</span>
-        <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:600">headline result</span>
-      </div>
-      <div style="font-size:12px;color:var(--muted);line-height:1.8">
-        Read words — <b>both:</b> [${idxList(fusion.both)}] · <b>only OpenAI:</b> [${idxList(fusion.onlyOA)}] · <b>only Gemini:</b> [${idxList(fusion.onlyGM)}]
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px">
-        ${fusion.pairs.map(p=>`<span class="pill ${p.fused}" title="OpenAI: ${p.oa||'—'} · Gemini: ${p.gm||'—'}">#${p.idx} ${p.fused}</span>`).join("")}
-      </div>
-    </div>` : "";
-  panel.innerHTML = `<label>Transcription race — ⚡ Fusion (union of both) is the headline; vendor cards below are for forensics</label>` +
-    fusionCard +
+  panel.innerHTML = `<label>Transcription race — 🏆 winner (He×0.6 + En×0.4) is loaded above as the headline; "Use this one" swaps in the other vendor's full result</label>` +
     vendors.map((v,idx) => `
       <div class="pairrow"${v.win?' style="border-color:var(--green);background:rgba(52,199,89,.06)"':''}>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
           <b>${v.win?"🏆 ":""}${v.name}</b>
-          <span class="pill ${v.ok?(v.hits>=0?'matched':'partial'):'missing'}">${v.ok?v.hits+" key hits":"failed"}</span>
+          ${v.ok?"":'<span class="pill missing">failed</span>'}
           ${scoreCells(v)}
-          ${v.ok?`<button data-ab="${idx}" class="abUse" style="margin-left:auto;padding:6px 12px">Use this one</button>`:""}
+          ${v.scored==="ok"?`<button data-ab="${idx}" class="abUse" style="margin-left:auto;padding:6px 12px">Use this one</button>`:""}
         </div>
         <div class="mono">${(v.ok ? (v.text||"(empty)") : ("[failed] "+v.err)).replace(/</g,"&lt;")}</div>
       </div>`).join("");
   panel.querySelectorAll(".abUse").forEach(b => b.addEventListener("click", () => {
     const v = vendors[+b.dataset.ab];
+    if(v.scored!=="ok") return;
+    vendors.forEach(x => x.win = (x === v));
     $("transcript").value = v.text;
-    $("recStatus").className="status"; $("recStatus").textContent = v.name + " transcript loaded.";
+    showHeadline(v.res);            // swap in the ENTIRE result set, not just the transcript text
+    renderAbPanel(vendors);
+    $("recStatus").className="status"; $("recStatus").textContent = `${v.name} selected — He ${v.he} / En ${v.en}.`;
   }));
 }
 
@@ -837,7 +799,66 @@ $("btnRerun").onclick = async () => {
     $("rerunOut").innerHTML = rows.join("");
   }
 };
+// ── experimental nikkud (havara) checker — fully separate from grading ──────
+// Reads only lastAudioBlob + heText; never touches He/En scores, transcripts,
+// regression runs, or the vendor race.
+const NIKKUD_PROMPT = HE => `You are checking the pronunciation precision (havara/nikkud) of a student reading pointed Hebrew aloud with Ashkenazi pronunciation. The assigned pointed text:
+
+${HE}
+
+Listen to the recording. For EACH word of the text in order, judge whether the vowels and stress were read as pointed (Ashkenazi conventions: kamatz = "o", cholam = "oi"/"o", tav without dagesh = "s"). Ignore normal disfluency (pauses, restarts, self-corrections) and ignore consonant-level accent differences. Judge ONLY vowels and stress.
+
+Return ONLY JSON, no markdown:
+{"words":[{"he":"...","read_as":"transliteration of what you heard","vowels":"correct"|"wrong"|"unclear","issue":"only if wrong: e.g. kamatz read as patach, stress on wrong syllable"}]}`;
+
+function updateNikkudBtn(){
+  const btn = $("btnNikkud");
+  if(btn) btn.disabled = !(lastAudioBlob && $("heText").value.trim());
+}
+
+$("btnNikkud").onclick = async () => {
+  const HE = $("heText").value.trim();
+  if(!lastAudioBlob || !HE) return;
+  $("nikkudStatus").className="status"; $("nikkudStatus").textContent="Checking havara…";
+  $("btnNikkud").disabled = true;
+  try{
+    const fd = new FormData();
+    fd.append("audio", lastAudioBlob, "recording.webm");
+    fd.append("prompt", NIKKUD_PROMPT(HE));
+    const r = await fetch(GEMINI_URL, { method:"POST", body:fd });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    const raw = d.text || "";
+    let parsed = null;
+    try{ parsed = JSON.parse(raw.replace(/```json|```/g,"").trim()); }catch{ parsed = null; }
+    renderNikkud(parsed, raw);
+    $("nikkudStatus").className="status";
+    $("nikkudStatus").textContent = (parsed && Array.isArray(parsed.words)) ? "Done — advisory only." : "Could not parse reply — showing raw output.";
+  }catch(e){ $("nikkudStatus").className="status err"; $("nikkudStatus").textContent=e.message; }
+  finally{ updateNikkudBtn(); }
+};
+
+function renderNikkud(parsed, raw){
+  const caveat = `<div class="hint" style="color:#9a6200;font-weight:600;margin-top:10px">Experimental — vowel judgments are unvalidated and advisory only. Grades above are unaffected.</div>`;
+  if(!parsed || !Array.isArray(parsed.words)){
+    $("nikkudOut").innerHTML = caveat + `<div class="hint" style="color:var(--red)">Couldn't parse JSON. Raw reply:</div><div class="mono">${(raw||"(empty)").replace(/</g,"&lt;")}</div>`;
+    return;
+  }
+  const rows = parsed.words.map(w => {
+    const v = String(w.vowels||"").toLowerCase();
+    const mark = v==="correct" ? `<span class="pill matched">✓</span>`
+               : v==="wrong"   ? `<span class="pill missing">✗</span>`
+               :                 `<span class="pill partial">?</span>`;
+    const issue = (v==="wrong" && w.issue) ? `<div class="heard">${String(w.issue).replace(/</g,"&lt;")}</div>` : "";
+    return `<tr><td class="he">${String(w.he||"").replace(/</g,"&lt;")}</td><td class="mono">${String(w.read_as||"").replace(/</g,"&lt;")}</td><td>${mark}${issue}</td></tr>`;
+  }).join("");
+  $("nikkudOut").innerHTML = caveat +
+    `<table class="keytable"><tr><td style="color:var(--muted)">Word</td><td style="color:var(--muted)">Read as</td><td style="color:var(--muted)">Vowels / stress</td></tr>${rows}</table>`;
+}
+$("heText").addEventListener("input", updateNikkudBtn);
+
 renderRuns();
+updateNikkudBtn();
 ensureWordKey().catch(()=>{});   // pre-build the key for the pre-filled reference text on load
 </script>
 </body>
