@@ -482,16 +482,55 @@ async function transcribe(blob){
   try{ await getIndexedPairs(); }catch{}   // warm the grading-pairs cache so both judges reuse it
   await Promise.all(vendors.map(async v => {
     if(!v.ok || !v.text.trim()){ v.scored="skip"; return; }
-    try{ const res = await judge(v.text); v.he = res.heScore; v.en = res.enScore; v.scored="ok"; }
+    try{ const res = await judge(v.text); v.res = res; v.he = res.heScore; v.en = res.enScore; v.scored="ok"; }
     catch(e){ v.scored="err"; v.scoreErr = e.message; }
   }));
-  renderAbPanel(vendors);   // repaint with scores
+  // FUSION: deterministic union of both vendors' results — no new LLM calls.
+  const oaRes = vendors[0].scored==="ok" ? vendors[0].res : null;
+  const gmRes = vendors[1].scored==="ok" ? vendors[1].res : null;
+  const fusion = (oaRes || gmRes) ? fuseResults(oaRes, gmRes) : null;
+  renderAbPanel(vendors, fusion);   // repaint with per-vendor scores + fusion headline
   const fmt = v => v.scored==="ok" ? `He ${v.he}/En ${v.en}` : (v.ok ? "—" : "failed");
-  $("recStatus").textContent = `${geminiWins?"Gemini":"OpenAI"} won on key hits — judge scores: OpenAI ${fmt(vendors[0])}, Gemini ${fmt(vendors[1])}.`;
+  $("recStatus").textContent = fusion
+    ? `⚡ Fusion He ${fusion.fusedHe} / En ${fusion.fusedEn}  ·  OpenAI ${fmt(vendors[0])} · Gemini ${fmt(vendors[1])}`
+    : `${geminiWins?"Gemini":"OpenAI"} won on key hits — no judge scores available.`;
+}
+
+// Deterministic fusion of the two vendors' judge results (pure set/array math).
+// Reading: union of matched word indices. Translation: better verdict per pair.
+function fuseResults(oaRes, gmRes){
+  const RANK = { matched:3, partial:2, missing:1 };   // absent → missing
+  const NAME = { 3:"matched", 2:"partial", 1:"missing" };
+  const enW  = { matched:1, partial:.5, missing:0 };
+  const total = (wordKey && wordKey.length) ? wordKey.length : 1;
+
+  const oaM = (oaRes && oaRes.align && oaRes.align.matched) || [];
+  const gmM = (gmRes && gmRes.align && gmRes.align.matched) || [];
+  const oaSet = new Set(oaM), gmSet = new Set(gmM);
+  const fusedMatched = [...new Set([...oaM, ...gmM])].sort((a,b)=>a-b);
+  const both   = fusedMatched.filter(i => oaSet.has(i) && gmSet.has(i));
+  const onlyOA = fusedMatched.filter(i => oaSet.has(i) && !gmSet.has(i));
+  const onlyGM = fusedMatched.filter(i => gmSet.has(i) && !oaSet.has(i));
+  const fusedHe = Math.round(fusedMatched.length / total * 100);
+
+  // per-pair verdicts keyed by pair idx — take the better of the two vendors
+  const pairMap = new Map();
+  const collect = (res, key) => (res && res.judged && res.judged.pairs || []).forEach(p => {
+    if(p.idx == null) return;
+    if(!pairMap.has(p.idx)) pairMap.set(p.idx, { idx:p.idx, oa:null, gm:null });
+    pairMap.get(p.idx)[key] = p.translation || "missing";
+  });
+  collect(oaRes, "oa"); collect(gmRes, "gm");
+  const pairs = [...pairMap.values()].sort((a,b)=>a.idx-b.idx).map(p => ({
+    idx:p.idx, oa:p.oa, gm:p.gm, fused: NAME[Math.max(RANK[p.oa]||1, RANK[p.gm]||1)]
+  }));
+  const fusedEn = pairs.length ? Math.round(pairs.reduce((s,p)=>s+(enW[p.fused]??0),0)/pairs.length*100) : 0;
+
+  return { fusedHe, fusedEn, fusedMatched, both, onlyOA, onlyGM, pairs };
 }
 
 // Side-by-side vendor comparison rendered under the transcript box.
-function renderAbPanel(vendors){
+function renderAbPanel(vendors, fusion){
   let panel = $("abPanel");
   if(!panel){ panel = document.createElement("div"); panel.id = "abPanel"; $("transcript").insertAdjacentElement("afterend", panel); }
   const scoreCells = v => {
@@ -501,7 +540,24 @@ function renderAbPanel(vendors){
     if(v.scored==="skip") return "";
     return `<span class="pill partial">scoring…</span>`;   // judge still running
   };
-  panel.innerHTML = `<label>Transcription race — winner (most key hits) auto-loaded above; He/En = full judge scores for each transcript</label>` +
+  const idxList = a => (a && a.length) ? a.join(", ") : "—";
+  const fusionCard = fusion ? `
+    <div class="pairrow" style="border:2px solid var(--blue);background:rgba(0,122,255,.07)">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <b style="font-size:15px">⚡ Fusion — union of both vendors</b>
+        <span class="pill matched" style="font-size:12px">He ${fusion.fusedHe}</span>
+        <span class="pill matched" style="font-size:12px">En ${fusion.fusedEn}</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:600">headline result</span>
+      </div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.8">
+        Read words — <b>both:</b> [${idxList(fusion.both)}] · <b>only OpenAI:</b> [${idxList(fusion.onlyOA)}] · <b>only Gemini:</b> [${idxList(fusion.onlyGM)}]
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px">
+        ${fusion.pairs.map(p=>`<span class="pill ${p.fused}" title="OpenAI: ${p.oa||'—'} · Gemini: ${p.gm||'—'}">#${p.idx} ${p.fused}</span>`).join("")}
+      </div>
+    </div>` : "";
+  panel.innerHTML = `<label>Transcription race — ⚡ Fusion (union of both) is the headline; vendor cards below are for forensics</label>` +
+    fusionCard +
     vendors.map((v,idx) => `
       <div class="pairrow"${v.win?' style="border-color:var(--green);background:rgba(52,199,89,.06)"':''}>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
