@@ -145,9 +145,25 @@
 <script>
 const WHISPER_URL = "https://ksa-app-production.up.railway.app/api/whisper";
 const CLAUDE_URL  = "https://ksa-app-production.up.railway.app/api/claude";
+const GEMINI_URL  = "https://ksa-app-production.up.railway.app/api/gemini-audio";
+const KEEP_PROMPT = "This recording mixes English with Hebrew and Aramaic read aloud in Ashkenazi pronunciation. Transcribe EVERYTHING. Render the Hebrew/Aramaic phonetically in Latin letters as heard (e.g. 'mei'eimosai korin es shema'), even when they are not real English words. Do not translate them and do not drop them. The English translation parts are transcribed normally. Output ONLY the transcript.";
 
 const $ = id => document.getElementById(id);
-let wordKey = null, mediaRecorder = null, chunks = [], lastJudge = null;
+let wordKey = null, wordKeyText = null, mediaRecorder = null, chunks = [], lastJudge = null;
+
+// referee: how many word-key transliterations show up (consonant-skeleton trigram hit) in a transcript
+function keyHits(t){
+  if(!wordKey||!wordKey.length) return -1;
+  const T=(t||"").toLowerCase().replace(/[^a-z]/g,"").replace(/[aeiou]/g,"");
+  let hits=0;
+  for(const w of wordKey){
+    const tr=Array.isArray(w.tr)?w.tr[0]:w.tr;
+    const sk=tr.toLowerCase().replace(/[^a-z]/g,"").replace(/[aeiou]/g,"");
+    if(sk.length<3) continue;
+    for(let i=0;i+3<=sk.length;i++){ if(T.includes(sk.slice(i,i+3))){hits++;break;} }
+  }
+  return hits;
+}
 
 // ── deterministic reading aligner ─────────────────────────────────────────
 function alignNorm(s){return (s||"").toLowerCase().replace(/[’'`\-–—]/g,"").replace(/[^a-z]/g,"");}
@@ -267,14 +283,18 @@ async function callClaude(user, system, max=4500){
 function parseJson(raw){return JSON.parse(raw.replace(/```json|```/g,"").trim());}
 
 // ── word key ──────────────────────────────────────────────────────────────
-$("btnKey").onclick = async () => {
+// Builds the transliterated word key for the CURRENT heText if it isn't already
+// current. Fast no-op when the key already matches the text on screen. Errors
+// are surfaced in keyStatus and re-thrown so awaiting callers (judge) can abort.
+async function ensureWordKey(){
   const heText = $("heText").value.trim();
+  if(wordKey && wordKeyText === heText) return;   // already current
   const words = heText.split(/\s+/).filter(w=>/[\u05D0-\u05EA]/.test(w));
-  if(!words.length){ $("keyStatus").textContent="No Hebrew words found."; return; }
+  if(!words.length){ wordKey=null; wordKeyText=null; $("keyOut").innerHTML=""; $("keyStatus").className="status err"; $("keyStatus").textContent="No Hebrew words found."; return; }
   const cacheKey = "ktb_key_" + stripNikud(heText).slice(0,120);
   const cached = localStorage.getItem(cacheKey);
-  if(cached){ wordKey = JSON.parse(cached); renderKey(); $("keyStatus").textContent="Loaded from cache."; return; }
-  $("keyStatus").textContent="Generating transliterations...";
+  if(cached){ wordKey = JSON.parse(cached); wordKeyText = heText; renderKey(); $("keyStatus").className="status"; $("keyStatus").textContent="Loaded from cache."; return; }
+  $("keyStatus").className="status"; $("keyStatus").textContent="Generating transliterations...";
   try{
     const raw = await callClaude(
       `Transliterate each numbered Hebrew/Aramaic word into ASHKENAZI pronunciation (sav for tav without dagesh, "oi"/"o" for cholam, kamatz as "o", typical yeshiva reading). Give the most likely casual spoken rendering.\n\nFor the shem havaya (יהוה) students say "Hashem" (with any attached prefix, e.g. וַיהוָה = "vaHashem"). For the Elokim-family (אלהים, אלהינו, אלהיך...) students say the k-form ("Elokim", "Elokeinu", "Elokecha").\n\n` +
@@ -283,10 +303,13 @@ $("btnKey").onclick = async () => {
       "You transliterate Hebrew/Aramaic into Ashkenazi pronunciation. Output ONLY valid JSON.", 2000);
     const parsed = parseJson(raw);
     wordKey = words.map((w,i)=>({i,he:w,tr:(parsed.find(p=>p.i===i)?.tr||stripNikud(w))}));
+    wordKeyText = heText;
     localStorage.setItem(cacheKey, JSON.stringify(wordKey));
-    renderKey(); $("keyStatus").textContent="Done.";
-  }catch(e){ $("keyStatus").className="status err"; $("keyStatus").textContent=e.message; }
-};
+    renderKey(); $("keyStatus").className="status"; $("keyStatus").textContent="Done.";
+  }catch(e){ $("keyStatus").className="status err"; $("keyStatus").textContent=e.message; throw e; }
+}
+// Button is now just a manual refresh.
+$("btnKey").onclick = () => { ensureWordKey().catch(()=>{}); };
 function renderKey(){
   $("keyOut").innerHTML = "<table class='keytable'>" + wordKey.map(w=>
     `<tr><td style="color:var(--muted)">${w.i}</td><td class="he">${w.he}</td><td class="mono">${w.tr}</td></tr>`).join("") + "</table>";
@@ -406,26 +429,78 @@ $("btnRec").onclick = async () => {
       await transcribe(new Blob(chunks,{type:"audio/webm"}));
     };
     mediaRecorder.start();
+    ensureWordKey().catch(()=>{});   // build the key while the student reads
     $("btnRec").textContent="■ Stop"; $("btnRec").classList.add("rec");
     $("recStatus").className="status"; $("recStatus").textContent="Recording...";
   }catch(e){ $("recStatus").className="status err"; $("recStatus").textContent="Mic error: "+e.message; }
 };
 $("btnUpload").onclick = ()=>$("fileInput").click();
-$("fileInput").onchange = e => { if(e.target.files[0]) transcribe(e.target.files[0]); };
+$("fileInput").onchange = e => { if(e.target.files[0]){ ensureWordKey().catch(()=>{}); transcribe(e.target.files[0]); } };
 
 async function transcribe(blob){
-  $("recStatus").className="status"; $("recStatus").textContent="Transcribing (gpt-4o-mini-transcribe)...";
-  try{
-    const fd = new FormData();
-    fd.append("audio", blob, "recording.webm");
+  $("recStatus").className="status"; $("recStatus").textContent="Transcribing (OpenAI + Gemini race)…";
+  // Word key must exist so the referee can score the two candidates.
+  try{ await ensureWordKey(); }catch{}
+
+  const mkFd = () => { const fd = new FormData(); fd.append("audio", blob, "recording.webm"); return fd; };
+  const openaiReq = (async () => {
+    const fd = mkFd();
     fd.append("language","en");
-    fd.append("model","gpt-4o-mini-transcribe"); // Railway must forward this — see server snippet
-    fd.append("prompt","This recording mixes English with Hebrew and Aramaic read aloud in Ashkenazi pronunciation. Transcribe EVERYTHING. Never omit or skip the Hebrew/Aramaic words: render them phonetically in Latin letters as heard (e.g. 'mei'eimosai korin es shema'), even when they are not real English words. Do not translate them and do not drop them.");
+    fd.append("model","gpt-4o-mini-transcribe");
+    fd.append("prompt",KEEP_PROMPT);
     const r = await fetch(WHISPER_URL,{method:"POST",body:fd});
     const d = await r.json();
-    $("transcript").value = d.text || "";
-    $("recStatus").textContent = d.text ? "Transcript ready." : "Empty transcript returned — check that Railway forwards the model field.";
-  }catch(e){ $("recStatus").className="status err"; $("recStatus").textContent=e.message; }
+    if(d.error) throw new Error(d.error);
+    return d.text || "";
+  })();
+  const geminiReq = (async () => {
+    const fd = mkFd();
+    fd.append("prompt",KEEP_PROMPT);
+    const r = await fetch(GEMINI_URL,{method:"POST",body:fd});
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    return d.text || "";
+  })();
+
+  const [oa, gm] = await Promise.allSettled([openaiReq, geminiReq]);
+  const oaOk = oa.status === "fulfilled", gmOk = gm.status === "fulfilled";
+  const oaText = oaOk ? oa.value : "";
+  const gmText = gmOk ? gm.value : "";
+  const oaHits = oaOk ? keyHits(oaText) : -2;   // failed request scores -2
+  const gmHits = gmOk ? keyHits(gmText) : -2;
+  // higher hit count wins; tie or missing word key → OpenAI (certified incumbent)
+  const geminiWins = gmHits > oaHits;
+  const winText = geminiWins ? gmText : oaText;
+  $("transcript").value = winText;
+
+  renderAbPanel([
+    { name:"OpenAI · gpt-4o-mini", hits:oaHits, ok:oaOk, text:oaText, err: oaOk?"":(oa.reason?.message||"failed"), win: !geminiWins },
+    { name:"Gemini",              hits:gmHits, ok:gmOk, text:gmText, err: gmOk?"":(gm.reason?.message||"failed"), win: geminiWins },
+  ]);
+
+  $("recStatus").className="status";
+  $("recStatus").textContent = `${geminiWins?"Gemini":"OpenAI"} won — OpenAI ${oaHits} vs Gemini ${gmHits} key hits.`;
+}
+
+// Side-by-side vendor comparison rendered under the transcript box.
+function renderAbPanel(vendors){
+  let panel = $("abPanel");
+  if(!panel){ panel = document.createElement("div"); panel.id = "abPanel"; $("transcript").insertAdjacentElement("afterend", panel); }
+  panel.innerHTML = `<label>Transcription race — winner (most key hits) is auto-loaded above</label>` +
+    vendors.map((v,idx) => `
+      <div class="pairrow"${v.win?' style="border-color:var(--green);background:rgba(52,199,89,.06)"':''}>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <b>${v.win?"🏆 ":""}${v.name}</b>
+          <span class="pill ${v.ok?(v.hits>=0?'matched':'partial'):'missing'}">${v.ok?v.hits+" key hits":"failed"}</span>
+          ${v.ok?`<button data-ab="${idx}" class="abUse" style="margin-left:auto;padding:6px 12px">Use this one</button>`:""}
+        </div>
+        <div class="mono">${(v.ok ? (v.text||"(empty)") : ("[failed] "+v.err)).replace(/</g,"&lt;")}</div>
+      </div>`).join("");
+  panel.querySelectorAll(".abUse").forEach(b => b.addEventListener("click", () => {
+    const v = vendors[+b.dataset.ab];
+    $("transcript").value = v.text;
+    $("recStatus").className="status"; $("recStatus").textContent = v.name + " transcript loaded.";
+  }));
 }
 
 // ── judging ───────────────────────────────────────────────────────────────
@@ -489,6 +564,8 @@ async function buildPrompt(transcript){
 const JUDGE_SYSTEM = "You are a precise kriah grading engine. Segment the transcript into reading vs translation spans and judge translation per phrase pair. Output ONLY valid JSON.";
 const JUDGE_MODEL = "claude-sonnet-4-6", JUDGE_MAXTOK = 4500;
 async function judge(transcript){
+  await ensureWordKey();
+  if(!wordKey) throw new Error("No word key — check the Hebrew reference text.");
   const {prompt, ip} = await buildPrompt(transcript);
   const raw = await callClaude(prompt, JUDGE_SYSTEM, JUDGE_MAXTOK);
   const judged = parseJson(raw);
@@ -516,9 +593,8 @@ judged.pairs.forEach(p => {
 }
 
 $("btnJudge").onclick = async () => {
-  if(!wordKey){ $("judgeStatus").className="status err"; $("judgeStatus").textContent="Build the word key first."; return; }
   const t = $("transcript").value.trim();
-  if(!t){ $("judgeStatus").className="status err"; $("judgeStatus").textContent="No transcript."; return; }
+  if(!t){ $("judgeStatus").className="status err"; $("judgeStatus").textContent="No transcript to judge — record or paste a transcript first."; return; }
   $("judgeStatus").className="status"; $("judgeStatus").textContent="Judging...";
   try{
     const res = await judge(t);
@@ -677,7 +753,7 @@ $("btnSave").onclick = () => {
 };
 $("btnClear").onclick = () => saveRuns([]);
 $("btnRerun").onclick = async () => {
-  if(!wordKey){ $("rerunOut").innerHTML="<div class='hint'>Build the word key first.</div>"; return; }
+  try{ await ensureWordKey(); }catch(e){ $("rerunOut").innerHTML="<div class='hint'>"+e.message+"</div>"; return; }
   const runs = loadRuns();
   if(!runs.length) return;
   $("rerunOut").innerHTML="<div class='hint'>Running "+runs.length+" transcripts...</div>";
@@ -690,6 +766,7 @@ $("btnRerun").onclick = async () => {
   }
 };
 renderRuns();
+ensureWordKey().catch(()=>{});   // pre-build the key for the pre-filled reference text on load
 </script>
 </body>
 </html>

@@ -61,72 +61,27 @@ app.post('/api/whisper', upload.single('audio'), async (req, res) => {
   }
 });
 
-app.post('/api/soniox-he', upload.single('audio'), async (req, res) => {
+app.post('/api/gemini-audio', upload.single('audio'), async (req, res) => {
   try {
-    const { FormData: NodeFormData } = await import('formdata-node');
-    const { Blob } = await import('buffer');
-    const form = new NodeFormData();
-    const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
-    form.set('file', blob, 'audio.webm');
-
-    // Step 1: Upload
-    const uploadRes = await fetch('https://api.soniox.com/v1/files', {
+    const audioB64 = req.file.buffer.toString('base64');
+    const model = req.body.model || 'gemini-3.5-flash';
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + process.env.GEMINI_API_KEY, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` },
-      body: form
-    });
-    const uploadData = await uploadRes.json();
-    console.log("Soniox upload:", JSON.stringify(uploadData).slice(0, 200));
-    const fileId = uploadData.id;
-    if (!fileId) throw new Error("Soniox file upload failed: " + JSON.stringify(uploadData));
-
-    // Step 2: Create transcription
-    // language_hints now includes both — Soniox handles code-switched audio,
-    // so this endpoint doubles as a mixed Hebrew/English fallback (plan C).
-    const transcriptRes = await fetch('https://api.soniox.com/v1/transcriptions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.SONIOX_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        file_id: fileId,
-        model: 'stt-async-v4',
-        language_hints: ['he', 'en'],
+        contents: [{ parts: [
+          { inlineData: { mimeType: req.file.mimetype || 'audio/webm', data: audioB64 } },
+          { text: req.body.prompt || 'Transcribe this audio.' }
+        ]}],
+        generationConfig: { temperature: 0 }
       })
     });
-    const transcriptData = await transcriptRes.json();
-    console.log("Soniox transcript created:", JSON.stringify(transcriptData).slice(0, 200));
-    const transcriptId = transcriptData.id;
-    if (!transcriptId) throw new Error("Soniox transcription failed: " + JSON.stringify(transcriptData));
-
-    // Step 3: Poll until complete
-    let result = null;
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-      const pollRes = await fetch(`https://api.soniox.com/v1/transcriptions/${transcriptId}`, {
-        headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
-      });
-      const pollData = await pollRes.json();
-      console.log("Soniox poll status:", pollData.status);
-     if (pollData.status === 'completed') {
-  const textRes = await fetch(`https://api.soniox.com/v1/transcriptions/${transcriptId}/transcript`, {
-    headers: { 'Authorization': `Bearer ${process.env.SONIOX_API_KEY}` }
-  });
-  const textData = await textRes.json();
-  console.log("Soniox transcript fetch:", JSON.stringify(textData).slice(0, 500));
-  result = textData;
-  break;
-}
-      if (pollData.status === 'failed') throw new Error("Soniox transcription failed");
-    }
-
-    console.log("Soniox result keys:", Object.keys(result || {}));
-    const text = result?.text || result?.transcript || result?.words?.map(w => w.text).join(' ') || '';
-    console.log("Soniox final text:", text.slice(0, 200));
+    const d = await r.json();
+    const text = d.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+    if (!text) console.error('Gemini empty response:', JSON.stringify(d).slice(0, 300));
     res.json({ text });
   } catch (err) {
-    console.error("Soniox error:", err);
+    console.error('Gemini audio error:', err);
     res.status(500).json({ error: err.message });
   }
 });
