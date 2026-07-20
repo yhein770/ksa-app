@@ -463,35 +463,51 @@ async function transcribe(blob){
   })();
 
   const [oa, gm] = await Promise.allSettled([openaiReq, geminiReq]);
-  const oaOk = oa.status === "fulfilled", gmOk = gm.status === "fulfilled";
-  const oaText = oaOk ? oa.value : "";
-  const gmText = gmOk ? gm.value : "";
-  const oaHits = oaOk ? keyHits(oaText) : -2;   // failed request scores -2
-  const gmHits = gmOk ? keyHits(gmText) : -2;
+  const vendors = [
+    { name:"OpenAI · gpt-4o-mini", ok: oa.status==="fulfilled", text: oa.status==="fulfilled"?oa.value:"", err: oa.reason?.message||"failed" },
+    { name:"Gemini",              ok: gm.status==="fulfilled", text: gm.status==="fulfilled"?gm.value:"", err: gm.reason?.message||"failed" },
+  ];
+  vendors.forEach(v => { v.hits = v.ok ? keyHits(v.text) : -2; });   // failed request scores -2
   // higher hit count wins; tie or missing word key → OpenAI (certified incumbent)
-  const geminiWins = gmHits > oaHits;
-  const winText = geminiWins ? gmText : oaText;
-  $("transcript").value = winText;
+  const geminiWins = vendors[1].hits > vendors[0].hits;
+  vendors[0].win = !geminiWins; vendors[1].win = geminiWins;
 
-  renderAbPanel([
-    { name:"OpenAI · gpt-4o-mini", hits:oaHits, ok:oaOk, text:oaText, err: oaOk?"":(oa.reason?.message||"failed"), win: !geminiWins },
-    { name:"Gemini",              hits:gmHits, ok:gmOk, text:gmText, err: gmOk?"":(gm.reason?.message||"failed"), win: geminiWins },
-  ]);
-
+  $("transcript").value = geminiWins ? vendors[1].text : vendors[0].text;
+  renderAbPanel(vendors);   // first paint: key-hit counts, judge scores pending
   $("recStatus").className="status";
-  $("recStatus").textContent = `${geminiWins?"Gemini":"OpenAI"} won — OpenAI ${oaHits} vs Gemini ${gmHits} key hits.`;
+  $("recStatus").textContent = `${geminiWins?"Gemini":"OpenAI"} won on key hits (OpenAI ${vendors[0].hits} vs Gemini ${vendors[1].hits}). Scoring both…`;
+
+  // MEASURE: run each transcript through the same judge + aligner for real He/En scores,
+  // so we can see whether keyHits picked the transcript that actually grades best.
+  try{ await getIndexedPairs(); }catch{}   // warm the grading-pairs cache so both judges reuse it
+  await Promise.all(vendors.map(async v => {
+    if(!v.ok || !v.text.trim()){ v.scored="skip"; return; }
+    try{ const res = await judge(v.text); v.he = res.heScore; v.en = res.enScore; v.scored="ok"; }
+    catch(e){ v.scored="err"; v.scoreErr = e.message; }
+  }));
+  renderAbPanel(vendors);   // repaint with scores
+  const fmt = v => v.scored==="ok" ? `He ${v.he}/En ${v.en}` : (v.ok ? "—" : "failed");
+  $("recStatus").textContent = `${geminiWins?"Gemini":"OpenAI"} won on key hits — judge scores: OpenAI ${fmt(vendors[0])}, Gemini ${fmt(vendors[1])}.`;
 }
 
 // Side-by-side vendor comparison rendered under the transcript box.
 function renderAbPanel(vendors){
   let panel = $("abPanel");
   if(!panel){ panel = document.createElement("div"); panel.id = "abPanel"; $("transcript").insertAdjacentElement("afterend", panel); }
-  panel.innerHTML = `<label>Transcription race — winner (most key hits) is auto-loaded above</label>` +
+  const scoreCells = v => {
+    if(!v.ok) return "";
+    if(v.scored==="ok")  return `<span class="pill matched">He ${v.he}</span><span class="pill matched">En ${v.en}</span>`;
+    if(v.scored==="err") return `<span class="pill missing" title="${(v.scoreErr||"").replace(/"/g,"&quot;")}">score failed</span>`;
+    if(v.scored==="skip") return "";
+    return `<span class="pill partial">scoring…</span>`;   // judge still running
+  };
+  panel.innerHTML = `<label>Transcription race — winner (most key hits) auto-loaded above; He/En = full judge scores for each transcript</label>` +
     vendors.map((v,idx) => `
       <div class="pairrow"${v.win?' style="border-color:var(--green);background:rgba(52,199,89,.06)"':''}>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
           <b>${v.win?"🏆 ":""}${v.name}</b>
           <span class="pill ${v.ok?(v.hits>=0?'matched':'partial'):'missing'}">${v.ok?v.hits+" key hits":"failed"}</span>
+          ${scoreCells(v)}
           ${v.ok?`<button data-ab="${idx}" class="abUse" style="margin-left:auto;padding:6px 12px">Use this one</button>`:""}
         </div>
         <div class="mono">${(v.ok ? (v.text||"(empty)") : ("[failed] "+v.err)).replace(/</g,"&lt;")}</div>
