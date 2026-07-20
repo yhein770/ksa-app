@@ -59,7 +59,7 @@
 <body>
 <div class="wrap">
   <h1>Kriah Grading Test Bench</h1>
-  <div class="sub">Record → Whisper (English, no prompt) → closed-vocabulary judge → scores. Save runs as a regression set and re-run them after every prompt tweak.</div>
+  <div class="sub">Record → OpenAI + Gemini race → closed-vocabulary judge → scores. Save runs as a regression set and re-run them after every prompt tweak.</div>
 
   <!-- STEP 0: setup -->
   <div class="card">
@@ -93,13 +93,13 @@
     <div class="hint">Read the Hebrew aloud, translating phrase by phrase, exactly like a student would. For your regression set do three takes: a clean read, one with two deliberately butchered words, one with a skipped phrase and a wrong translation.</div>
     <div class="row">
       <button class="primary" id="btnDictate">🎤 Dictate (device engine)</button>
-      <button id="btnRec">● Record → Whisper</button>
+      <button id="btnRec">● Record → transcribe</button>
       <button id="btnUpload">Upload audio file</button>
       <input type="file" id="fileInput" accept="audio/*" style="display:none">
       <span class="status" id="recStatus"></span>
     </div>
     <label>Raw transcript (editable — this is the mush)</label>
-    <textarea id="transcript" rows="4" class="mono" placeholder="Whisper output appears here..."></textarea>
+    <textarea id="transcript" rows="4" class="mono" placeholder="Winning transcript appears here..."></textarea>
   </div>
 
   <!-- STEP 3: judge -->
