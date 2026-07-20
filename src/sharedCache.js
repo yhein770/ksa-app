@@ -52,6 +52,9 @@ export const CacheKey = {
   ksaTranslit: (simanNum, seifIdx) =>
     `translit/ksa/${simanNum}/${seifIdx}`,
 
+  chumashTranslit: (book, chapter, verse) =>
+    `translit/chumash/${sanitize(book)}/${chapter}/${verse}`,
+
   talmudWord: (masechet, daf, segIdx, heWord) =>
     `wordtrans/talmud/${sanitize(masechet)}/${sanitize(daf)}/${segIdx}/${sanitize(stripNikud(heWord))}`,
 
@@ -66,6 +69,9 @@ export const CacheKey = {
 
   ksaSummary: (simanNum) =>
     `summaries/ksa/${simanNum}`,
+
+  ksaAlignment: (simanNum, seifIdx) =>
+    `align/ksa/${simanNum}/${seifIdx}`,
 };
 
 export async function getCache(key) {

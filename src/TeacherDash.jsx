@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { db, auth, storage } from "./firebase";
-import { doc, getDoc, setDoc, arrayUnion, arrayRemove, collection, addDoc, query, orderBy, onSnapshot, deleteDoc } from "firebase/firestore";
+import { doc, getDoc, getDocFromServer, setDoc, arrayUnion, arrayRemove, collection, addDoc, query, orderBy, onSnapshot, deleteDoc, increment } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail } from "firebase/auth";
 
 const C = {
   bg: "#F5F0EB", label: "#1A1A1A", muted: "#8E8E93",
@@ -76,8 +76,20 @@ async function removeStudent(studentEmail, code) {
 
 async function loadStudentDoc(email) {
   try {
-    const snap = await getDoc(doc(db, "students", email));
-    return snap.exists() ? snap.data() : null;
+    const snap = await getDocFromServer(doc(db, "students", email));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    // dailyActivity is stored as flat dot-notation keys (e.g. "dailyActivity.2026-04-07.total")
+    // because setDoc+merge doesn't expand dots into nested maps. Reconstruct the nested object.
+    const activity = {};
+    for (const [key, val] of Object.entries(data)) {
+      const m = key.match(/^dailyActivity\.(\d{4}-\d{2}-\d{2})\.(\w+)$/);
+      if (m) {
+        if (!activity[m[1]]) activity[m[1]] = {};
+        activity[m[1]][m[2]] = val;
+      }
+    }
+    return { ...data, dailyActivity: activity };
   } catch { return null; }
 }
 
@@ -115,6 +127,22 @@ function ProgressBar({ value, max, color }) {
       <div style={{ height: "100%", width: `${pct}%`, background: color || C.green, borderRadius: 980, transition: "width .4s" }} />
     </div>
   );
+}
+
+function formatTime(seconds) {
+  if (!seconds || seconds < 60) return seconds > 0 ? `${seconds}s` : "—";
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+const TODAY = new Date().toISOString().slice(0, 10);
+
+function getWeekStart() {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  return d.toISOString().slice(0, 10);
 }
 
 // ── Progress helpers ──────────────────────────────────────────────────────────
@@ -278,7 +306,7 @@ const TYPE_META = {
   resource:     { label: "Resource",     color: C.purple },
 };
 
-export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved, onSelectAssignment, onPreviewAssignment, onViewProgress, filterType, allProgress, talmudProgress, onCountChange }) {
+export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved, onSelectAssignment, onPreviewAssignment, onViewProgress, filterType, allProgress, talmudProgress, chumashProgress, onCountChange }) {
   const [items, setItems] = useState([]);
   const [composing, setComposing] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
@@ -288,13 +316,22 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
   // assignment
   const [assignName, setAssignName] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [ksaMode, setKsaMode] = useState("all");
+  const [assignSubject, setAssignSubject] = useState("");
+  const [ksaMode, setKsaMode] = useState("siman-range");
   const [ksaFrom, setKsaFrom] = useState("");
   const [ksaTo, setKsaTo] = useState("");
+  const [ksaSiman, setKsaSiman] = useState("");
+  const [ksaFromSeif, setKsaFromSeif] = useState("");
+  const [ksaToSeif, setKsaToSeif] = useState("");
   const [talmudMasechet, setTalmudMasechet] = useState("");
   const [talmudDaf, setTalmudDaf] = useState("");
   const [talmudFromSeg, setTalmudFromSeg] = useState("");
   const [talmudToSeg, setTalmudToSeg] = useState("");
+  const [chumashSefer, setChumashSefer] = useState("");
+  const [chumashPerek, setChumashPerek] = useState("");
+  const [chumashFromPasuk, setChumashFromPasuk] = useState("");
+  const [chumashToPasuk, setChumashToPasuk] = useState("");
+  const [chumashWithRashi, setChumashWithRashi] = useState(false);
   // resource
   const [resTitle, setResTitle] = useState("");
   const [resDesc, setResDesc] = useState("");
@@ -319,8 +356,11 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
   }, [classCode]);
 
   function resetForm() {
-    setAnnText(""); setAssignName(""); setDueDate(""); setKsaMode("all"); setKsaFrom(""); setKsaTo("");
-    setTalmudMasechet(""); setTalmudDaf(""); setTalmudFromSeg(""); setTalmudToSeg(""); setResTitle(""); setResDesc(""); setResUrl(""); setResFile(null); setUploadProgress(null); setUploadError(null);
+    setAnnText(""); setAssignName(""); setDueDate(""); setAssignSubject("");
+    setKsaMode("siman-range"); setKsaFrom(""); setKsaTo(""); setKsaSiman(""); setKsaFromSeif(""); setKsaToSeif("");
+    setTalmudMasechet(""); setTalmudDaf(""); setTalmudFromSeg(""); setTalmudToSeg("");
+    setChumashSefer(""); setChumashPerek(""); setChumashFromPasuk(""); setChumashToPasuk(""); setChumashWithRashi(false);
+    setResTitle(""); setResDesc(""); setResUrl(""); setResFile(null); setUploadProgress(null); setUploadError(null);
     setEditingItem(null);
     setComposing(false);
   }
@@ -330,14 +370,26 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
     setAssignName(item.title || "");
     setDueDate(item.dueDate || "");
     const ksa = item.assignmentData?.ksa;
-    if (ksa?.all) { setKsaMode("all"); }
-    else if (ksa?.simanim?.length) { setKsaMode("range"); setKsaFrom(String(Math.min(...ksa.simanim))); setKsaTo(String(Math.max(...ksa.simanim))); }
-    else { setKsaMode("none"); }
     const t = item.assignmentData?.talmud;
-    setTalmudMasechet(t?.masechet || "");
-    setTalmudDaf(t?.daf || "");
-    setTalmudFromSeg(t?.fromSeg ? String(t.fromSeg) : "");
-    setTalmudToSeg(t?.toSeg ? String(t.toSeg) : "");
+    const ch = item.assignmentData?.chumash;
+    if (ksa) {
+      setAssignSubject("ksa");
+      if (ksa.simanim?.length) { setKsaMode("siman-range"); setKsaFrom(String(Math.min(...ksa.simanim))); setKsaTo(String(Math.max(...ksa.simanim))); }
+      else if (ksa.siman) { setKsaMode("seif-specific"); setKsaSiman(String(ksa.siman)); setKsaFromSeif(ksa.fromSeif ? String(ksa.fromSeif) : ""); setKsaToSeif(ksa.toSeif ? String(ksa.toSeif) : ""); }
+    } else if (t) {
+      setAssignSubject("talmud");
+      setTalmudMasechet(t.masechet || "");
+      setTalmudDaf(t.daf || "");
+      setTalmudFromSeg(t.fromSeg ? String(t.fromSeg) : "");
+      setTalmudToSeg(t.toSeg ? String(t.toSeg) : "");
+    } else if (ch) {
+      setAssignSubject("chumash");
+      setChumashSefer(ch.seferName || "");
+      setChumashPerek(ch.perek ? String(ch.perek) : "");
+      setChumashFromPasuk(ch.fromPasuk ? String(ch.fromPasuk) : "");
+      setChumashToPasuk(ch.toPasuk ? String(ch.toPasuk) : "");
+      setChumashWithRashi(ch.withRashi || false);
+    }
     setEditingItem(item);
     setComposing(true);
   }
@@ -351,15 +403,28 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
       if (!annText.trim()) { setPosting(false); return; }
       item = { ...base, text: annText.trim() };
     } else if (postType === "assignment") {
-      const ksaSimanim = ksaMode === "range" && ksaFrom && ksaTo
-        ? Array.from({ length: Math.max(0, parseInt(ksaTo) - parseInt(ksaFrom) + 1) }, (_, i) => parseInt(ksaFrom) + i).filter(n => n >= 1 && n <= 221)
-        : null;
-      const talmudData = talmudMasechet && talmudDaf
+      const ksaData = (() => {
+        if (assignSubject !== "ksa") return null;
+        if (ksaMode === "siman-range" && ksaFrom && ksaTo) {
+          const simanim = Array.from({ length: Math.max(0, parseInt(ksaTo) - parseInt(ksaFrom) + 1) }, (_, i) => parseInt(ksaFrom) + i).filter(n => n >= 1 && n <= 221);
+          return simanim.length ? { simanim } : null;
+        }
+        if (ksaMode === "seif-specific" && ksaSiman) {
+          return { siman: parseInt(ksaSiman), fromSeif: ksaFromSeif ? parseInt(ksaFromSeif) : 1, toSeif: ksaToSeif ? parseInt(ksaToSeif) : null };
+        }
+        return null;
+      })();
+      const talmudData = assignSubject === "talmud" && talmudMasechet && talmudDaf
         ? { masechet: talmudMasechet, daf: talmudDaf, fromSeg: talmudFromSeg ? parseInt(talmudFromSeg) : 1, toSeg: talmudToSeg ? parseInt(talmudToSeg) : null, masechtos: [talmudMasechet] }
         : null;
+      const SEFARIM_MAP = { "Bereishit":"Genesis","Shemot":"Exodus","Vayikra":"Leviticus","Bamidbar":"Numbers","Devarim":"Deuteronomy" };
+      const chumashData = assignSubject === "chumash" && chumashSefer && chumashPerek
+        ? { seferName: chumashSefer, sefer: SEFARIM_MAP[chumashSefer] || chumashSefer, perek: parseInt(chumashPerek), fromPasuk: chumashFromPasuk ? parseInt(chumashFromPasuk) : 1, toPasuk: chumashToPasuk ? parseInt(chumashToPasuk) : null, withRashi: chumashWithRashi }
+        : null;
       const assignmentData = {
-        ksa: ksaSimanim?.length ? { simanim: ksaSimanim } : (ksaMode === "all" ? { all: true } : null),
+        ksa: ksaData,
         talmud: talmudData,
+        chumash: chumashData,
       };
       item = { ...base, assignmentData, title: assignName.trim() || "Assignment", dueDate: dueDate || null };
       await updateAssignments(classCode, assignmentData);
@@ -448,39 +513,116 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
                     style={{ width: "100%", padding: "9px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none" }} />
                 </div>
               </div>
-              <div style={{ fontWeight: 600, fontSize: 13, color: C.label, marginBottom: 8 }}>Kitzur Shulchan Aruch</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                {[["all", "All simanim"], ["range", "Custom range"], ["none", "None"]].map(([val, lbl]) => (
-                  <button key={val} onClick={() => setKsaMode(val)} style={{ flex: 1, padding: "6px 8px", borderRadius: 20, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 500, background: ksaMode === val ? C.brown : "rgba(0,0,0,.06)", color: ksaMode === val ? "white" : C.label }}>{lbl}</button>
-                ))}
-              </div>
-              {ksaMode === "range" && (
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
-                  <input type="number" min="1" max="221" value={ksaFrom} onChange={e => setKsaFrom(e.target.value)} placeholder="From"
-                    style={{ flex: 1, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
-                  <span style={{ color: C.muted }}>–</span>
-                  <input type="number" min="1" max="221" value={ksaTo} onChange={e => setKsaTo(e.target.value)} placeholder="To"
-                    style={{ flex: 1, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+
+              {/* Subject picker */}
+              {!assignSubject ? (
+                <div>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>Choose Subject</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {[["ksa","Kitzur S.A."],["talmud","Talmud"],["chumash","Chumash"]].map(([val, lbl]) => (
+                      <button key={val} onClick={() => setAssignSubject(val)}
+                        style={{ flex: 1, padding: "12px 8px", borderRadius: 12, border: `1.5px solid ${C.border}`, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600, background: "white", color: C.label, transition: "all .15s" }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = C.brown; e.currentTarget.style.background = "rgba(184,134,11,.06)"; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.background = "white"; }}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.label }}>
+                      { assignSubject === "ksa" ? "Kitzur Shulchan Aruch" : assignSubject === "talmud" ? "Talmud" : "Chumash" }
+                    </div>
+                    <button onClick={() => setAssignSubject("")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.muted, fontFamily: "inherit", padding: 0 }}>Change subject</button>
+                  </div>
+
+                  {/* KSA fields */}
+                  {assignSubject === "ksa" && (
+                    <div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                        {[["siman-range","Siman Range"],["seif-specific","Specific Seifim"]].map(([val, lbl]) => (
+                          <button key={val} onClick={() => setKsaMode(val)} style={{ flex: 1, padding: "7px 8px", borderRadius: 20, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 500, background: ksaMode === val ? C.brown : "rgba(0,0,0,.06)", color: ksaMode === val ? "white" : C.label }}>{lbl}</button>
+                        ))}
+                      </div>
+                      {ksaMode === "siman-range" && (
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <input type="number" min="1" max="221" value={ksaFrom} onChange={e => setKsaFrom(e.target.value)} placeholder="Siman from"
+                            style={{ flex: 1, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                          <span style={{ color: C.muted }}>–</span>
+                          <input type="number" min="1" max="221" value={ksaTo} onChange={e => setKsaTo(e.target.value)} placeholder="Siman to"
+                            style={{ flex: 1, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                        </div>
+                      )}
+                      {ksaMode === "seif-specific" && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          <input type="number" min="1" max="221" value={ksaSiman} onChange={e => setKsaSiman(e.target.value)} placeholder="Siman number"
+                            style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>Seifim</div>
+                            <input type="number" min="1" value={ksaFromSeif} onChange={e => setKsaFromSeif(e.target.value)} placeholder="From"
+                              style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                            <span style={{ color: C.muted }}>–</span>
+                            <input type="number" min="1" value={ksaToSeif} onChange={e => setKsaToSeif(e.target.value)} placeholder="To (optional)"
+                              style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Talmud fields */}
+                  {assignSubject === "talmud" && (
+                    <div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                        <select value={talmudMasechet} onChange={e => setTalmudMasechet(e.target.value)}
+                          style={{ flex: 2, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", background: "white", color: talmudMasechet ? C.label : C.muted }}>
+                          <option value="">Masechet…</option>
+                          {MASECHTOS.map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                        <input value={talmudDaf} onChange={e => setTalmudDaf(e.target.value)} placeholder="Daf (e.g. 2a)"
+                          style={{ flex: 1, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>Segments</div>
+                        <input type="number" min="1" value={talmudFromSeg} onChange={e => setTalmudFromSeg(e.target.value)} placeholder="From"
+                          style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                        <span style={{ color: C.muted }}>–</span>
+                        <input type="number" min="1" value={talmudToSeg} onChange={e => setTalmudToSeg(e.target.value)} placeholder="To"
+                          style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Chumash fields */}
+                  {assignSubject === "chumash" && (
+                    <div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                        <select value={chumashSefer} onChange={e => setChumashSefer(e.target.value)}
+                          style={{ flex: 2, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", background: "white", color: chumashSefer ? C.label : C.muted }}>
+                          <option value="">Sefer…</option>
+                          {["Bereishit","Shemot","Vayikra","Bamidbar","Devarim"].map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                        <input type="number" min="1" value={chumashPerek} onChange={e => setChumashPerek(e.target.value)} placeholder="Perek"
+                          style={{ flex: 1, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>Pesukim</div>
+                        <input type="number" min="1" value={chumashFromPasuk} onChange={e => setChumashFromPasuk(e.target.value)} placeholder="From"
+                          style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                        <span style={{ color: C.muted }}>–</span>
+                        <input type="number" min="1" value={chumashToPasuk} onChange={e => setChumashToPasuk(e.target.value)} placeholder="To (optional)"
+                          style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
+                      </div>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, cursor: "pointer", fontSize: 13, color: C.label, fontWeight: 500 }}>
+                        <input type="checkbox" checked={chumashWithRashi} onChange={e => setChumashWithRashi(e.target.checked)} style={{ width: 16, height: 16, cursor: "pointer", accentColor: C.brown }} />
+                        Include Rashi
+                      </label>
+                    </div>
+                  )}
                 </div>
               )}
-              <div style={{ fontWeight: 600, fontSize: 13, color: C.label, marginBottom: 8 }}>Talmud</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <select value={talmudMasechet} onChange={e => setTalmudMasechet(e.target.value)}
-                  style={{ flex: 2, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", background: "white", color: talmudMasechet ? C.label : C.muted }}>
-                  <option value="">Masechet…</option>
-                  {MASECHTOS.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-                <input value={talmudDaf} onChange={e => setTalmudDaf(e.target.value)} placeholder="Daf (e.g. 2a)"
-                  style={{ flex: 1, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
-                <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>Segments</div>
-                <input type="number" min="1" value={talmudFromSeg} onChange={e => setTalmudFromSeg(e.target.value)} placeholder="From"
-                  style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
-                <span style={{ color: C.muted }}>–</span>
-                <input type="number" min="1" value={talmudToSeg} onChange={e => setTalmudToSeg(e.target.value)} placeholder="To"
-                  style={{ flex: 1, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontFamily: "inherit", fontSize: 14, outline: "none", textAlign: "center" }} />
-              </div>
             </div>
           )}
 
@@ -533,12 +675,27 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
           const isPastDue = item.dueDate && new Date(item.dueDate + "T23:59:59") < new Date();
           // Compute completion for student view
           let isComplete = false;
+          let progDone = 0, progTotal = 0;
           if (!isTeacher && isAssignment && (allProgress || talmudProgress)) {
             const ad = item.assignmentData;
-            const ksaDone = !ad?.ksa || (ad.ksa.all ? false : (ad.ksa.simanim || []).every(num => {
-              const seifs = allProgress?.[num] || {};
-              return Object.values(seifs).length > 0 && Object.values(seifs).every(v => v === "mastered");
-            }));
+            const ksaDone = !ad?.ksa || (ad.ksa.all ? false :
+              ad.ksa.siman
+                ? (() => {
+                    const { siman, fromSeif, toSeif } = ad.ksa;
+                    const from = fromSeif || 1;
+                    const to = toSeif;
+                    if (!to) return false;
+                    const seifs = allProgress?.[siman] || {};
+                    for (let i = from - 1; i <= to - 1; i++) {
+                      if (seifs[i] !== "mastered") return false;
+                    }
+                    return true;
+                  })()
+                : (ad.ksa.simanim || []).every(num => {
+                    const seifs = allProgress?.[num] || {};
+                    return Object.values(seifs).length > 0 && Object.values(seifs).every(v => v === "mastered");
+                  })
+            );
             const talmudDone = !ad?.talmud?.masechet || (() => {
               const t = ad.talmud;
               if (!t.fromSeg || !t.toSeg) return false;
@@ -548,7 +705,45 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
               }
               return true;
             })();
-            isComplete = ksaDone && talmudDone && (ad?.ksa || ad?.talmud);
+            // Chumash progress
+            let chDone = 0, chRead = 0, chTotal = 0;
+            if (ad?.chumash?.seferName) {
+              const ch = ad.chumash;
+              const from = ch.fromPasuk || 1;
+              const to = ch.toPasuk || from;
+              chTotal = to - from + 1;
+              for (let p = from; p <= to; p++) {
+                const pp = chumashProgress?.[`${ch.seferName}_${ch.perek}_${p}`];
+                if (pp?.read && pp?.vocab && (!ch.withRashi || pp?.rashi)) chDone++;
+                if (pp?.read) chRead++;
+              }
+            }
+            const chumashDone = !ad?.chumash?.seferName || chDone === chTotal;
+            isComplete = ksaDone && talmudDone && chumashDone && (ad?.ksa || ad?.talmud || ad?.chumash);
+            // Progress counts
+            if (ad?.ksa && !ad.ksa.all) {
+              if (ad.ksa.siman && ad.ksa.fromSeif && ad.ksa.toSeif) {
+                const { siman, fromSeif, toSeif } = ad.ksa;
+                progTotal += toSeif - (fromSeif - 1);
+                const seifs = allProgress?.[siman] || {};
+                for (let i = fromSeif - 1; i <= toSeif - 1; i++) { if (seifs[i] === "mastered") progDone++; }
+              } else if (ad.ksa.simanim) {
+                for (const num of ad.ksa.simanim) {
+                  const vals = Object.values(allProgress?.[num] || {});
+                  if (vals.length > 0 && vals.every(v => v === "mastered")) progDone++;
+                  progTotal++;
+                }
+              }
+            }
+            if (ad?.talmud?.masechet && ad.talmud.fromSeg && ad.talmud.toSeg) {
+              const t = ad.talmud;
+              progTotal += t.toSeg - (t.fromSeg - 1);
+              for (let i = t.fromSeg - 1; i <= t.toSeg - 1; i++) {
+                const st = talmudProgress?.[`${t.masechet}_${t.daf}_${i}`];
+                if (st?.kriah && st?.quiz) progDone++;
+              }
+            }
+            progDone += chRead; progTotal += chTotal;
           }
           return (
             <div key={item.id} style={{ background: "white", borderRadius: 16, padding: "16px 18px", marginBottom: 10, boxShadow: "0 1px 3px rgba(0,0,0,.05),0 3px 12px rgba(0,0,0,.04)" }}>
@@ -568,7 +763,7 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
                 <div style={{ background: "rgba(255,59,48,.06)", borderRadius: 10, padding: "10px 14px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <span style={{ fontSize: 13, color: C.red, fontWeight: 500 }}>Delete this post?</span>
                   <div style={{ display: "flex", gap: 6 }}>
-                    <button onClick={async () => { await deleteDoc(doc(db, "classes", classCode, "feed", item.id)); setConfirmDelete(null); }} style={{ background: C.red, color: "white", border: "none", borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600 }}>Delete</button>
+                    <button onClick={async () => { try { await deleteDoc(doc(db, "classes", classCode, "feed", item.id)); if (editingItem?.id === item.id) resetForm(); setConfirmDelete(null); } catch (e) { console.error("Delete failed:", e); setConfirmDelete(null); } }} style={{ background: C.red, color: "white", border: "none", borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600 }}>Delete</button>
                     <button onClick={() => setConfirmDelete(null)} style={{ background: "rgba(0,0,0,.07)", color: C.label, border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontFamily: "inherit", fontSize: 12 }}>Cancel</button>
                   </div>
                 </div>
@@ -589,16 +784,33 @@ export function FeedPanel({ classCode, isTeacher, currentUser, onAssignmentSaved
                       Due {dueDateStr}{isPastDue ? " · Past due" : ""}
                     </div>
                   )}
-                  <div style={{ fontSize: 13, color: C.muted, marginBottom: onSelectAssignment ? 12 : 0 }}>
+                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 8 }}>
                     {item.assignmentData?.ksa?.simanim && `KSA: Simanim ${Math.min(...item.assignmentData.ksa.simanim)}–${Math.max(...item.assignmentData.ksa.simanim)}`}
-                    {item.assignmentData?.ksa?.all && "KSA: All Simanim"}
+                    {item.assignmentData?.ksa?.siman && `KSA: Siman ${item.assignmentData.ksa.siman} · Seifim ${item.assignmentData.ksa.fromSeif || 1}–${item.assignmentData.ksa.toSeif || "?"}`}
                     {item.assignmentData?.ksa && item.assignmentData?.talmud && " · "}
                     {item.assignmentData?.talmud?.masechet && (() => {
                       const t = item.assignmentData.talmud;
                       const segs = t.fromSeg ? (t.toSeg ? `segs ${t.fromSeg}–${t.toSeg}` : `from seg ${t.fromSeg}`) : "";
                       return `Talmud: ${t.masechet} ${t.daf}${segs ? ` · ${segs}` : ""}`;
                     })()}
+                    {item.assignmentData?.talmud?.masechet && item.assignmentData?.chumash?.seferName && " · "}
+                    {item.assignmentData?.chumash?.seferName && (() => {
+                      const ch = item.assignmentData.chumash;
+                      const ps = ch.fromPasuk ? (ch.toPasuk ? `pesukim ${ch.fromPasuk}–${ch.toPasuk}` : `from pasuk ${ch.fromPasuk}`) : "";
+                      return `Chumash: ${ch.seferName} ${ch.perek}${ps ? ` · ${ps}` : ""}${ch.withRashi ? " · with Rashi" : ""}`;
+                    })()}
                   </div>
+                  {!isTeacher && progTotal > 0 && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 12, color: C.muted }}>Progress</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: isComplete ? C.green : C.brown }}>{progDone}/{progTotal}</span>
+                      </div>
+                      <div style={{ background: "rgba(0,0,0,.07)", borderRadius: 4, height: 6, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${(progDone/progTotal)*100}%`, background: isComplete ? C.green : C.brown, borderRadius: 4, transition: "width .3s" }} />
+                      </div>
+                    </div>
+                  )}
                   <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                     {onSelectAssignment && (
                       <button onClick={() => onSelectAssignment(item)} style={{ background: C.brown, color: "white", border: "none", borderRadius: 10, padding: "8px 18px", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>
@@ -660,9 +872,24 @@ export function TeacherLogin({ onLogin, onBack }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
+  async function handleForgotPassword() {
+    const e = email.trim().toLowerCase();
+    if (!e.includes("@")) { setErr("Enter your email address first."); return; }
+    setLoading(true); setErr("");
+    try {
+      await sendPasswordResetEmail(auth, e);
+      setResetSent(true);
+    } catch {
+      setErr("Could not send reset email. Check the address and try again.");
+    }
+    setLoading(false);
+  }
 
   const inputStyle = {
     width: "100%", padding: "13px 16px", border: `1px solid ${C.border}`,
@@ -711,19 +938,36 @@ export function TeacherLogin({ onLogin, onBack }) {
           <input value={name} onChange={e => setName(e.target.value)} placeholder="Full name" style={inputStyle} autoFocus />
         )}
         <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email address" style={inputStyle} autoFocus={mode === "login"} />
-        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && handleSubmit()} placeholder="Password" style={{ ...inputStyle, marginBottom: err ? 8 : 16 }} />
+        <div style={{ position: "relative", marginBottom: err ? 8 : 16 }}>
+          <input type={showPw ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleSubmit()} placeholder="Password"
+            style={{ ...inputStyle, marginBottom: 0, paddingRight: 44 }} />
+          <button onClick={() => setShowPw(v => !v)} type="button"
+            style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 4, color: C.muted, lineHeight: 1 }}>
+            {showPw
+              ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            }
+          </button>
+        </div>
         {err && <p style={{ color: C.red, fontSize: 13, marginBottom: 12 }}>{err}</p>}
+        {resetSent && <p style={{ color: C.green, fontSize: 13, marginBottom: 12 }}>Reset email sent — check your inbox.</p>}
         <Btn onClick={handleSubmit} bg={C.brown} style={{ width: "100%" }} disabled={loading || !email.includes("@") || !password}>
           {loading ? "Please wait…" : mode === "login" ? "Sign In" : "Create Account"}
         </Btn>
         <p style={{ fontSize: 14, color: C.muted, marginTop: 16 }}>
           {mode === "login" ? "New teacher? " : "Already registered? "}
-          <button onClick={() => { setMode(m => m === "login" ? "register" : "login"); setErr(""); }}
+          <button onClick={() => { setMode(m => m === "login" ? "register" : "login"); setErr(""); setResetSent(false); }}
             style={{ background: "none", border: "none", cursor: "pointer", color: C.brown, fontFamily: "inherit", fontSize: 14, fontWeight: 500 }}>
             {mode === "login" ? "Register here" : "Sign in"}
           </button>
         </p>
+        {mode === "login" && (
+          <button onClick={handleForgotPassword} disabled={loading}
+            style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontFamily: "inherit", fontSize: 13, textDecoration: "underline", marginTop: 4 }}>
+            Forgot password?
+          </button>
+        )}
       </div>
     </div>
   );
@@ -740,7 +984,7 @@ function StudentDetail({ student, teacher, onBack, onRemove, classAssignments })
   const showTalmud = !!assignedMasechtos;
   const showBoth = !showKSA && !showTalmud;
 
-  const [tab, setTab] = useState(showKSA || showBoth ? "ksa" : "talmud");
+  const [tab, setTab] = useState(showKSA || showBoth ? "ksa" : showTalmud ? "talmud" : "activity");
 
   const ksaBySimans = {};
   if (showKSA || showBoth) {
@@ -768,7 +1012,23 @@ function StudentDetail({ student, teacher, onBack, onRemove, classAssignments })
   const talmudTotal = Object.values(talmudByDaf).filter(({ mastered }) => mastered > 0).length;
   const lastSeen = student.lastSeen ? new Date(student.lastSeen).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Never";
 
-  const tabs = [...((showKSA || showBoth) ? [["ksa", "KSA Progress"]] : []), ...((showTalmud || showBoth) ? [["talmud", "Talmud Progress"]] : [])];
+  // Activity stats
+  const activityDays = Object.entries(student.dailyActivity || {}).sort(([a], [b]) => b.localeCompare(a));
+  const todaySecs = student.dailyActivity?.[TODAY]?.total || 0;
+  const weekSecs = activityDays.filter(([d]) => d >= getWeekStart()).reduce((sum, [, v]) => sum + (v.total || 0), 0);
+  const totalSecs = activityDays.reduce((sum, [, v]) => sum + (v.total || 0), 0);
+  const subjectTotals = { ksa: 0, talmud: 0, chumash: 0 };
+  activityDays.forEach(([, v]) => {
+    if (v.ksa) subjectTotals.ksa += v.ksa;
+    if (v.talmud) subjectTotals.talmud += v.talmud;
+    if (v.chumash) subjectTotals.chumash += v.chumash;
+  });
+
+  const talmudAnki = student.talmudAnki || {};
+  const ankiTotal = Object.keys(talmudAnki).length;
+  const ankiMastered = Object.values(talmudAnki).filter(v => (v.interval || 0) >= 21).length;
+  const ankiDueToday = Object.values(talmudAnki).filter(v => v.dueDate && v.dueDate <= TODAY).length;
+  const tabs = [...((showKSA || showBoth) ? [["ksa", "KSA"]] : []), ...((showTalmud || showBoth) ? [["talmud", "Talmud"]] : []), ...(ankiTotal > 0 ? [["anki", "TalmudKI"]] : []), ["activity", "Activity"]];
 
   return (
     <div>
@@ -785,19 +1045,27 @@ function StudentDetail({ student, teacher, onBack, onRemove, classAssignments })
             <div style={{ fontSize: 13, color: C.label, fontWeight: 500 }}>{lastSeen}</div>
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: showBoth || (showKSA && showTalmud) ? "1fr 1fr" : "1fr", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 10 }}>
           {(showKSA || showBoth) && (
             <div style={{ background: C.bg, borderRadius: 12, padding: "14px 16px", textAlign: "center" }}>
-              <div style={{ fontSize: 32, fontWeight: 700, color: C.gold, marginBottom: 2 }}>{ksaTotal}</div>
-              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>KSA Seifim Mastered</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: C.gold, marginBottom: 2 }}>{ksaTotal}</div>
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>KSA Mastered</div>
             </div>
           )}
           {(showTalmud || showBoth) && (
             <div style={{ background: C.bg, borderRadius: 12, padding: "14px 16px", textAlign: "center" }}>
-              <div style={{ fontSize: 32, fontWeight: 700, color: C.brown, marginBottom: 2 }}>{talmudTotal}</div>
-              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>Talmud Segments Mastered</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: C.brown, marginBottom: 2 }}>{talmudTotal}</div>
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>Talmud Mastered</div>
             </div>
           )}
+          <div style={{ background: C.bg, borderRadius: 12, padding: "14px 16px", textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: todaySecs > 0 ? C.green : C.muted, marginBottom: 2 }}>{todaySecs > 0 ? formatTime(todaySecs) : "—"}</div>
+            <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>Today</div>
+          </div>
+          <div style={{ background: C.bg, borderRadius: 12, padding: "14px 16px", textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: weekSecs > 0 ? C.brown : C.muted, marginBottom: 2 }}>{formatTime(weekSecs)}</div>
+            <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>This Week</div>
+          </div>
         </div>
       </div>
 
@@ -835,6 +1103,84 @@ function StudentDetail({ student, teacher, onBack, onRemove, classAssignments })
               <ProgressBar value={mastered} max={started || 1} color={C.brown} />
             </div>
           ))
+      )}
+
+      {tab === "anki" && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 14 }}>
+            <div style={{ background: "white", borderRadius: 12, padding: "14px 16px", textAlign: "center", boxShadow: "0 1px 3px rgba(0,0,0,.04)" }}>
+              <div style={{ fontSize: 26, fontWeight: 700, color: C.brown, marginBottom: 2 }}>{ankiTotal}</div>
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>Words Seen</div>
+            </div>
+            <div style={{ background: "white", borderRadius: 12, padding: "14px 16px", textAlign: "center", boxShadow: "0 1px 3px rgba(0,0,0,.04)" }}>
+              <div style={{ fontSize: 26, fontWeight: 700, color: C.green, marginBottom: 2 }}>{ankiMastered}</div>
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>Mastered</div>
+            </div>
+            <div style={{ background: "white", borderRadius: 12, padding: "14px 16px", textAlign: "center", boxShadow: "0 1px 3px rgba(0,0,0,.04)" }}>
+              <div style={{ fontSize: 26, fontWeight: 700, color: ankiDueToday > 0 ? C.gold : C.muted, marginBottom: 2 }}>{ankiDueToday}</div>
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>Due Today</div>
+            </div>
+          </div>
+          {ankiTotal > 0 && (
+            <div style={{ background: "white", borderRadius: 12, padding: "14px 16px", boxShadow: "0 1px 3px rgba(0,0,0,.04)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: C.label }}>Mastery</span>
+                <span style={{ fontSize: 13, color: C.muted }}>{ankiMastered}/{ankiTotal}</span>
+              </div>
+              <ProgressBar value={ankiMastered} max={ankiTotal} color={C.green} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "activity" && (
+        <div>
+          {/* Subject breakdown */}
+          {totalSecs > 0 && (
+            <div style={{ background: "white", borderRadius: 14, padding: "16px 18px", marginBottom: 12, boxShadow: "0 1px 3px rgba(0,0,0,.04)" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 12 }}>All-Time: {formatTime(totalSecs)}</div>
+              {[["ksa", "KSA", C.gold], ["talmud", "Talmud", C.brown], ["chumash", "Chumash", "#2E7D32"]].map(([key, label, color]) => {
+                const secs = subjectTotals[key];
+                if (!secs) return null;
+                return (
+                  <div key={key} style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                      <span style={{ fontSize: 13, color: C.label, fontWeight: 500 }}>{label}</span>
+                      <span style={{ fontSize: 13, color: C.muted }}>{formatTime(secs)}</span>
+                    </div>
+                    <ProgressBar value={secs} max={totalSecs} color={color} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* Daily log */}
+          {activityDays.length === 0 ? (
+            <p style={{ color: C.muted, textAlign: "center", padding: "40px 0" }}>No activity recorded yet.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {activityDays.slice(0, 30).map(([date, v]) => {
+                const d = new Date(date + "T12:00:00");
+                const label = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+                const isToday = date === TODAY;
+                const breakdown = [["KSA", v.ksa], ["Talmud", v.talmud], ["Chumash", v.chumash]].filter(([, s]) => s > 0);
+                return (
+                  <div key={date} style={{ background: "white", borderRadius: 12, padding: "12px 16px", boxShadow: "0 1px 3px rgba(0,0,0,.04)", borderLeft: `3px solid ${isToday ? C.green : "transparent"}` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 13, fontWeight: isToday ? 700 : 500, color: C.label }}>{isToday ? "Today" : label}</span>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: C.brown }}>{formatTime(v.total || 0)}</span>
+                    </div>
+                    {breakdown.length > 0 && (
+                      <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                        {breakdown.map(([lbl, secs]) => `${lbl}: ${formatTime(secs)}`).join(" · ")}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
       <div style={{ marginTop: 32, borderTop: `0.5px solid ${C.border}`, paddingTop: 20 }}>
@@ -902,9 +1248,27 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
         const seifs = student.allProgress?.[num] || {};
         if (Object.values(seifs).length > 0 && Object.values(seifs).every(v => v === "mastered")) ksaDone++;
       });
+    } else if (ksa?.siman && ksa?.toSeif) {
+      const from = ksa.fromSeif || 1;
+      ksaTotal = ksa.toSeif - from + 1;
+      const seifs = student.allProgress?.[ksa.siman] || {};
+      for (let i = from - 1; i <= ksa.toSeif - 1; i++) {
+        if (seifs[i] === "mastered") ksaDone++;
+      }
     }
-    const isComplete = (talmudTotal === 0 || talmudDone === talmudTotal) && (ksaTotal === 0 || ksaDone === ksaTotal) && (talmudTotal > 0 || ksaTotal > 0);
-    return { talmudDone, talmudTotal, ksaDone, ksaTotal, isComplete };
+    const ch = ad?.chumash;
+    let chumashDone = 0, chumashTotal = 0;
+    if (ch?.seferName && ch?.perek) {
+      const from = ch.fromPasuk || 1;
+      const to = ch.toPasuk || from;
+      chumashTotal = to - from + 1;
+      for (let p = from; p <= to; p++) {
+        const pp = student.chumashProgress?.[`${ch.seferName}_${ch.perek}_${p}`];
+        if (pp?.read) chumashDone++;
+      }
+    }
+    const isComplete = (talmudTotal === 0 || talmudDone === talmudTotal) && (ksaTotal === 0 || ksaDone === ksaTotal) && (chumashTotal === 0 || chumashDone === chumashTotal) && (talmudTotal > 0 || ksaTotal > 0 || chumashTotal > 0);
+    return { talmudDone, talmudTotal, ksaDone, ksaTotal, chumashDone, chumashTotal, isComplete };
   }
 
   useEffect(() => {
@@ -963,19 +1327,6 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
             {copied ? "✓ Copied" : "Copy"}
           </button>
         </div>
-        <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: C.bg, borderRadius: 10 }}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: C.label }}>Shakla v'Tarya progression lock</div>
-            <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{classData.progressionLocked !== false ? "Students must complete segments to unlock chavruta" : "Students can access chavruta freely"}</div>
-          </div>
-          <button onClick={async () => {
-            const newVal = classData.progressionLocked === false ? true : false;
-            await setDoc(doc(db, "classes", classData.code), { progressionLocked: newVal }, { merge: true });
-            setClassData(c => ({ ...c, progressionLocked: newVal }));
-          }} style={{ background: classData.progressionLocked !== false ? C.brown : C.green, color: "white", border: "none", borderRadius: 20, padding: "6px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, transition: "background .2s", flexShrink: 0 }}>
-            {classData.progressionLocked !== false ? "Locked" : "Unlocked"}
-          </button>
-        </div>
       </div>
 
       {/* Tabs */}
@@ -1023,6 +1374,8 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
                   ? Object.entries(s.talmudProgress || {}).filter(([k, v]) => assignedMasechtos.some(m => k.startsWith(m + "_")) && v?.kriah && v?.quiz).length
                   : talmudMastered(s.talmudProgress);
                 const lastSeen = s.lastSeen ? new Date(s.lastSeen).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
+                const todayMins = Math.round((s.dailyActivity?.[TODAY]?.total || 0) / 60);
+                const totalMins = Math.round(Object.values(s.dailyActivity || {}).reduce((sum, v) => sum + (v.total || 0), 0) / 60);
                 return (
                   <div key={s.email} onClick={() => setSelected(s)}
                     style={{ background: "white", borderRadius: 14, padding: "16px 18px", boxShadow: "0 1px 3px rgba(0,0,0,.05),0 3px 12px rgba(0,0,0,.04)", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, transition: "box-shadow .15s" }}
@@ -1035,19 +1388,15 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
                       <div style={{ fontWeight: 600, fontSize: 15, color: C.label, marginBottom: 2 }}>{s.name}</div>
                       <div style={{ fontSize: 12, color: C.muted }}>{s.email}</div>
                     </div>
-                    <div style={{ display: "flex", gap: 16, flexShrink: 0 }}>
-                      {showKSA && (
-                        <div style={{ textAlign: "center" }}>
-                          <div style={{ fontSize: 18, fontWeight: 700, color: C.gold }}>{ksaCount}</div>
-                          <div style={{ fontSize: 10, color: C.muted }}>KSA</div>
-                        </div>
-                      )}
-                      {showTalmud && (
-                        <div style={{ textAlign: "center" }}>
-                          <div style={{ fontSize: 18, fontWeight: 700, color: C.brown }}>{talmudCount}</div>
-                          <div style={{ fontSize: 10, color: C.muted }}>Talmud</div>
-                        </div>
-                      )}
+                    <div style={{ display: "flex", gap: 14, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: C.brown }}>{totalMins > 0 ? totalMins : "—"}</div>
+                        <div style={{ fontSize: 10, color: C.muted }}>Total mins</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 18, fontWeight: 600, color: todayMins > 0 ? C.green : C.muted }}>{todayMins > 0 ? todayMins : "—"}</div>
+                        <div style={{ fontSize: 10, color: C.muted }}>Today</div>
+                      </div>
                       <div style={{ textAlign: "center" }}>
                         <div style={{ fontSize: 13, fontWeight: 500, color: C.label }}>{lastSeen}</div>
                         <div style={{ fontSize: 10, color: C.muted }}>Last seen</div>
@@ -1092,6 +1441,7 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
               return (
                 <div style={{ fontSize:12, color:C.muted, marginBottom:20 }}>
                   {ksa?.simanim && `KSA: Simanim ${Math.min(...ksa.simanim)}–${Math.max(...ksa.simanim)}`}
+                  {ksa?.siman && `KSA: Siman ${ksa.siman} · Seifim ${ksa.fromSeif || 1}–${ksa.toSeif || "?"}`}
                   {ksa?.all && "KSA: All Simanim"}
                   {ksa && t?.masechet && " · "}
                   {t?.masechet && `${t.masechet} ${t.daf}${t.fromSeg && t.toSeg ? ` · segs ${t.fromSeg}–${t.toSeg}` : ""}`}
@@ -1109,16 +1459,19 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
                   .sort((a, b) => {
                     if (a.prog.isComplete && !b.prog.isComplete) return -1;
                     if (!a.prog.isComplete && b.prog.isComplete) return 1;
-                    const aTotal = a.prog.talmudTotal + a.prog.ksaTotal;
-                    const bTotal = b.prog.talmudTotal + b.prog.ksaTotal;
-                    const aPct = aTotal > 0 ? (a.prog.talmudDone + a.prog.ksaDone) / aTotal : 0;
-                    const bPct = bTotal > 0 ? (b.prog.talmudDone + b.prog.ksaDone) / bTotal : 0;
+                    const aTotal = a.prog.talmudTotal + a.prog.ksaTotal + a.prog.chumashTotal;
+                    const bTotal = b.prog.talmudTotal + b.prog.ksaTotal + b.prog.chumashTotal;
+                    const aPct = aTotal > 0 ? (a.prog.talmudDone + a.prog.ksaDone + a.prog.chumashDone) / aTotal : 0;
+                    const bPct = bTotal > 0 ? (b.prog.talmudDone + b.prog.ksaDone + b.prog.chumashDone) / bTotal : 0;
                     return bPct - aPct;
                   })
                   .map(({ s, prog }) => {
-                    const overall = prog.talmudTotal + prog.ksaTotal > 0
-                      ? Math.round(((prog.talmudDone + prog.ksaDone) / (prog.talmudTotal + prog.ksaTotal)) * 100)
+                    const overall = prog.talmudTotal + prog.ksaTotal + prog.chumashTotal > 0
+                      ? Math.round(((prog.talmudDone + prog.ksaDone + prog.chumashDone) / (prog.talmudTotal + prog.ksaTotal + prog.chumashTotal)) * 100)
                       : 0;
+                    const completedAt = s.assignmentCompletions?.[progressAssignment.id];
+                    const isLate = completedAt && progressAssignment.dueDate
+                      && new Date(completedAt) > new Date(progressAssignment.dueDate + "T23:59:59");
                     return (
                       <div key={s.email} style={{ background:"white", borderRadius:14, padding:"14px 16px", boxShadow:"0 1px 4px rgba(0,0,0,.04)", display:"flex", alignItems:"center", gap:14 }}>
                         <div style={{ width:38, height:38, borderRadius:"50%", background:`hsl(${s.name.charCodeAt(0)*7%360},40%,70%)`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, color:"white", flexShrink:0 }}>
@@ -1128,7 +1481,10 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
                           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
                             <span style={{ fontWeight:600, fontSize:14, color:C.label }}>{s.name}</span>
                             {prog.isComplete
-                              ? <span style={{ background:"rgba(52,199,89,.12)", color:C.green, borderRadius:20, padding:"2px 10px", fontSize:11, fontWeight:700 }}>✓ Complete</span>
+                              ? <span style={{ display:"flex", gap:5, alignItems:"center" }}>
+                                  <span style={{ background:"rgba(52,199,89,.12)", color:C.green, borderRadius:20, padding:"2px 10px", fontSize:11, fontWeight:700 }}>✓ Complete</span>
+                                  {isLate && <span style={{ background:"rgba(255,59,48,.1)", color:C.red, borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:700 }}>Late</span>}
+                                </span>
                               : <span style={{ fontSize:12, color:C.muted, fontWeight:500 }}>{overall}%</span>}
                           </div>
                           {prog.talmudTotal > 0 && (
@@ -1153,7 +1509,18 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
                               </div>
                             </div>
                           )}
-                          {prog.talmudTotal === 0 && prog.ksaTotal === 0 && (
+                          {prog.chumashTotal > 0 && (
+                            <div style={{ marginTop: prog.ksaTotal > 0 ? 6 : 0 }}>
+                              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                                <span style={{ fontSize:11, color:C.muted }}>Chumash pesukim</span>
+                                <span style={{ fontSize:11, color:prog.chumashDone===prog.chumashTotal?C.green:C.muted, fontWeight:600 }}>{prog.chumashDone}/{prog.chumashTotal}</span>
+                              </div>
+                              <div style={{ height:5, background:"rgba(0,0,0,.07)", borderRadius:99, overflow:"hidden" }}>
+                                <div style={{ height:"100%", width:`${prog.chumashTotal>0?(prog.chumashDone/prog.chumashTotal)*100:0}%`, background:prog.chumashDone===prog.chumashTotal?C.green:"#5C3317", borderRadius:99, transition:"width .3s" }} />
+                              </div>
+                            </div>
+                          )}
+                          {prog.talmudTotal === 0 && prog.ksaTotal === 0 && prog.chumashTotal === 0 && (
                             <div style={{ fontSize:12, color:C.muted }}>Not started</div>
                           )}
                         </div>
@@ -1188,6 +1555,8 @@ function ClassDetail({ classData: initialClass, teacher, onBack }) {
                 <div style={{ fontWeight:700, fontSize:15, color:C.label, marginBottom:8 }}>Kitzur Shulchan Aruch</div>
                 {previewAssignment.assignmentData.ksa.all
                   ? <div style={{ fontSize:13, color:C.muted }}>All Simanim</div>
+                  : previewAssignment.assignmentData.ksa.siman
+                  ? <div style={{ fontSize:13, color:C.muted }}>Siman {previewAssignment.assignmentData.ksa.siman} · Seifim {previewAssignment.assignmentData.ksa.fromSeif || 1}–{previewAssignment.assignmentData.ksa.toSeif || "?"}</div>
                   : <div style={{ fontSize:13, color:C.muted }}>Simanim {Math.min(...previewAssignment.assignmentData.ksa.simanim)}–{Math.max(...previewAssignment.assignmentData.ksa.simanim)}</div>}
               </div>
             )}

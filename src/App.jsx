@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { db } from "./firebase";
-import { doc, getDoc, setDoc, collection, onSnapshot, deleteDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, collection, getDocs, onSnapshot, deleteDoc, deleteField, increment } from "firebase/firestore";
 import { auth } from "./firebase";
 import { TeacherLogin, TeacherDash, loadTeacher, loadClass, joinClass, ChatPanel, FeedPanel } from "./TeacherDash";
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, fetchSignInMethodsForEmail, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+import ChumashHome, { CHUMASH_BETA_EMAILS } from "./ChumashModule";
+import TutorialOverlay, { KSA_TUTORIAL, KSA_SIMAN_TUTORIAL, KSA_STUDY_TUTORIAL, TALMUD_TUTORIAL, TALMUD_DAF_TUTORIAL, TALMUD_STUDY_TUTORIAL, CLASSROOM_TUTORIAL } from "./TutorialOverlay";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
 import { transliterateHebrew, transliterateSegment, TRANSLITERATION_SYSTEM_PROMPT } from "./transliterate";
-import { withCache, CacheKey } from "./sharedCache";
+import { withCache, CacheKey, getCache, setCache } from "./sharedCache";
 async function lookupJastrow(heWord) {
   const stripped = heWord.replace(/[\u0591-\u05C7]/g, "").trim();
   if (!stripped) return null;
@@ -51,6 +53,68 @@ async function callClaude(user, system, max = 400) {
   }
   return d.content[0].text;
 }
+async function getAlignment(simanNum, seifIdx, he, en) {
+  if (!he || !en) return [];
+  const key = CacheKey.ksaAlignment(simanNum, seifIdx);
+  const localKey = `sc_${key}`;
+
+  const local = localStorage.getItem(localKey);
+  if (local) {
+    try { const p = JSON.parse(local); if (Array.isArray(p.pairs)) return p.pairs; }
+    catch { localStorage.removeItem(localKey); }
+  }
+  const remote = await getCache(key);
+  if (remote) {
+    try {
+      const p = JSON.parse(remote);
+      if (Array.isArray(p.pairs)) { localStorage.setItem(localKey, remote); return p.pairs; }
+    } catch { /* fall through and regenerate */ }
+  }
+
+  const prompt = `You are aligning a Hebrew passage to its existing English translation, word-by-word.
+
+Hebrew: "${he}"
+English: "${en}"
+
+Return JSON: {"pairs":[{"he":"...","en":"..."}, ...]} walking through the Hebrew in order.
+
+Rules:
+- "he" preserves the source text exactly — nikud, spelling, order. Concatenating all "he" values in order must reproduce the Hebrew passage.
+- Group Hebrew words into one pair when they map to a single English unit (construct phrases, idioms like "מכל מקום", "אף על פי כן"). Otherwise keep them separate.
+- Hebrew prefixes (ו, ב, ל, מ, ה) stay on their host word — translate the whole thing together (e.g. "וּבְבֹקֶר" → "and in the morning").
+- "en" must be a literal slice of the English above — do not paraphrase, do not invent words. If a Hebrew word has no English counterpart, use "".
+- Output ONLY the JSON, no markdown.`;
+  try {
+    const raw = await callClaude(
+      prompt,
+      "You are a precise Hebrew-English alignment tool. Output ONLY valid JSON, no markdown.",
+      2000
+    );
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed.pairs)) {
+      const serialized = JSON.stringify(parsed);
+      localStorage.setItem(localKey, serialized);
+      setCache(key, serialized);
+      return parsed.pairs;
+    }
+  } catch (e) {
+    console.warn("alignment failed:", e);
+  }
+  return [];
+}
+
+function findAlignmentAtIndex(pairs, wordIdx) {
+  if (!pairs || wordIdx < 0) return null;
+  let cursor = 0;
+  for (const p of pairs) {
+    const count = (p.he || "").trim().split(/\s+/).filter(Boolean).length || 1;
+    if (wordIdx >= cursor && wordIdx < cursor + count) return p;
+    cursor += count;
+  }
+  return null;
+}
+
 async function callWhisper(audioBlob, language = null, prompt = null) {
   const formData = new FormData();
   formData.append("audio", audioBlob, "recording.webm");
@@ -78,8 +142,6 @@ async function saveStudent(email, data) {
   } catch (e) { console.error("saveStudent error:", e); }
 }
 
-// Emails that bypass the ShaklaVTarya progression lock
-const SHAKLA_OVERRIDE_EMAILS = [];
 
 const SEIFIM_DATA = {};
 
@@ -328,11 +390,13 @@ function Btn({ children, onClick, disabled, bg, style={} }) {
 }
 
 // ── WORD POPUP ───────────────────────────────────────────────────────────────
-function WordPopup({ popup, onClose, student, callClaude, onFlagResolved }) {
+function WordPopup({ popup, onClose, student, callClaude, onFlagResolved, onSave }) {
   const [flagOpen, setFlagOpen] = useState(false);
   const [flagSuggestion, setFlagSuggestion] = useState("");
   const [flagSubmitting, setFlagSubmitting] = useState(false);
   const [flagDone, setFlagDone] = useState(false);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { setSaved(false); }, [popup?.he]);
 
   if (!popup) return null;
 
@@ -367,19 +431,20 @@ function WordPopup({ popup, onClose, student, callClaude, onFlagResolved }) {
 
   return (
     <>
-      <div onClick={e => e.stopPropagation()} style={{ position:"fixed",bottom:0,left:0,right:0,background:"rgba(255,255,255,.97)",borderTop:"0.5px solid rgba(0,0,0,.1)",padding:"16px 24px 32px",zIndex:300,boxShadow:"0 -8px 32px rgba(0,0,0,.1)",backdropFilter:"blur(20px)",WebkitBackdropFilter:"blur(20px)" }}>
-        <div style={{ maxWidth:700, margin:"0 auto" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-              <button onClick={onClose} style={{ background:"rgba(0,0,0,.06)",border:"none",cursor:"pointer",fontSize:15,color:C.muted,padding:"4px 10px",borderRadius:980,fontWeight:300,lineHeight:1 }}>×</button>
-              {popup.en && <span style={{ fontSize:11,background:popup.isPhrase?"rgba(52,199,89,.12)":"rgba(0,122,255,.1)",color:popup.isPhrase?"#1A5C2A":"#003D80",borderRadius:980,padding:"3px 10px",fontWeight:500,letterSpacing:"-0.01em" }}>{popup.isPhrase ? "Expression" : "Saved"}</span>}
-              <button onClick={e => { e.stopPropagation(); setFlagOpen(true); }} style={{ background:"none",border:"1px solid rgba(184,134,11,.4)",borderRadius:8,padding:"3px 9px",fontSize:11,color:"#6B4E1A",cursor:"pointer",fontFamily:"inherit" }}>✦ suggest fix</button>
-            </div>
-            <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif",fontSize:26,fontWeight:700,color:C.label }}>{popup.he}</div>
-          </div>
+      <div style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:300, display:"flex", justifyContent:"center", pointerEvents:"none" }}>
+        <div onClick={e => e.stopPropagation()} style={{ pointerEvents:"auto", background:"#fff", borderRadius:"20px 20px 0 0", padding:"24px 20px 32px", width:"100%", maxWidth:500, textAlign:"center", boxShadow:"0 -8px 32px rgba(0,0,0,.12)" }}>
+          <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:32, fontWeight:700, color:C.label, marginBottom:8 }}>{popup.he}</div>
           {popup.loading
-            ? <p style={{ color:C.muted,fontSize:15,textAlign:"center",padding:"6px 0" }}>Looking up…</p>
-            : <p style={{ fontSize:17,color:"#3A2A1E",lineHeight:1.55 }}>{popup.en}</p>}
+            ? <p style={{ color:C.muted, fontSize:15, padding:"6px 0" }}>Looking up…</p>
+            : <p style={{ fontSize:18, color:"#3A2A1E", lineHeight:1.55, minHeight:28 }}>{popup.en}</p>}
+          <div style={{ display:"flex", gap:8, justifyContent:"center", alignItems:"center", marginTop:12, flexWrap:"wrap" }}>
+            {popup.isPhrase && <span style={{ fontSize:11,background:"rgba(52,199,89,.12)",color:"#1A5C2A",borderRadius:980,padding:"3px 10px",fontWeight:500,letterSpacing:"-0.01em" }}>Expression</span>}
+            <button onClick={e => { e.stopPropagation(); setFlagOpen(true); }} style={{ background:"none",border:"1px solid rgba(184,134,11,.4)",borderRadius:8,padding:"3px 9px",fontSize:11,color:"#6B4E1A",cursor:"pointer",fontFamily:"inherit" }}>✦ suggest fix</button>
+          </div>
+          <div style={{ marginTop:16, display:"grid", gridTemplateColumns: onSave ? "1fr 1fr" : "1fr", gap:10 }}>
+            <button onClick={onClose} style={{ background:"rgba(0,0,0,.08)", color:C.label, border:"none", borderRadius:12, padding:"12px", fontFamily:"inherit", fontSize:15, fontWeight:590, cursor:"pointer" }}>Close</button>
+            {onSave && <button disabled={!popup.en} onClick={e => { e.stopPropagation(); if (!saved && popup.en) { onSave(); setSaved(true); } }} style={{ background: saved ? C.green : C.gold, color:"#fff", border:"none", borderRadius:12, padding:"12px", fontFamily:"inherit", fontSize:15, fontWeight:590, cursor: popup.en ? "pointer" : "default", opacity: popup.en ? 1 : .5 }}>{saved ? "✓ Saved" : "Save to Vocab"}</button>}
+          </div>
         </div>
       </div>
       {flagOpen && (
@@ -431,6 +496,7 @@ function SeifCards({ seifIdx, seifVocab, onDone, vocabCompleted }) {
     he: typeof val === "object" ? val.he : key,
     en: typeof val === "object" ? val.en : val,
     ctx: typeof val === "object" ? val.ctx : "",
+    lexical: typeof val === "object" ? (val.lexical || null) : null,
   }));
 
   const [knownSet, setKnownSet] = useState(new Set());
@@ -500,7 +566,16 @@ function SeifCards({ seifIdx, seifVocab, onDone, vocabCompleted }) {
             <CtxSnippet ctx={card.ctx} targetHe={card.he} />
           </div>
         ) : (
-          <div style={{ fontSize:22,color:"#3A2A1E",textAlign:"center",lineHeight:1.55 }}>{card.en}</div>
+          <div style={{ textAlign:"center" }}>
+            <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:C.muted, fontWeight:500, display:"block", marginBottom:6 }}>In this passage</span>
+            <div style={{ fontSize:22,color:"#3A2A1E",lineHeight:1.55 }}>{card.en}</div>
+            {card.lexical && card.lexical.toLowerCase() !== (card.en || "").toLowerCase() && (
+              <div style={{ marginTop:18, paddingTop:14, borderTop:"0.5px solid rgba(0,0,0,.08)" }}>
+                <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:C.muted, fontWeight:500, display:"block", marginBottom:6 }}>Root meaning</span>
+                <div style={{ fontSize:14, color:C.muted, lineHeight:1.45, fontStyle:"italic" }}>{card.lexical}</div>
+              </div>
+            )}
+          </div>
         )}
       </div>
       {flipped ? (
@@ -1247,12 +1322,15 @@ function Kriah({ seif, onPass }) {
 }
 
 // ── SEIF STUDY VIEW ──────────────────────────────────────────────────────────
-function SeifStudy({ seifIdx, activeSiman, status, onMastered, onBack, onVocabSave, onWordMastered, simanVocab, onVocabDone, onKriahDone, quizScores, onQuizScore, onNext, student }) {
+function SeifStudy({ seifIdx, activeSiman, status, onMastered, onBack, onGoToSubjects, onVocabSave, onWordMastered, simanVocab, onVocabDone, onKriahDone, quizScores, onQuizScore, onNext, onNavNext, onPrev, assignmentFromSeif, assignmentToSeif, student, fromAssignment, seenTutorial, onTutorialSeen }) {
   const [tab, setTab] = useState("read");
+  const [showStudyTutorial, setShowStudyTutorial] = useState(!seenTutorial);
+  function dismissStudyTutorial() { setShowStudyTutorial(false); onTutorialSeen?.(); }
   const [vocabStage, setVocabStage] = useState("init");
   const [popup, setPopup] = useState(null);
   const lastTapRef = useRef({ word: null, time: 0 });
   const [selectionPopup, setSelectionPopup] = useState(null);
+  const alignmentRef = useRef([]);
   useEffect(() => { window.scrollTo(0, 0); }, [seifIdx]);
 const seif = SEIFIM[seifIdx];
   const mastered = status === "mastered";
@@ -1262,6 +1340,17 @@ const seif = SEIFIM[seifIdx];
 
   // Reset vocab stage whenever we enter a new seif
   useEffect(() => { setVocabStage("cards"); setTab("read"); }, [seifIdx]);
+
+  // Prefetch word-level alignment for the current seif (shared cache means first user warms it for everyone)
+  useEffect(() => {
+    alignmentRef.current = [];
+    if (!seif?.he || !seif?.en) return;
+    let cancelled = false;
+    getAlignment(activeSiman, seifIdx, seif.he, seif.en).then(pairs => {
+      if (!cancelled) alignmentRef.current = pairs;
+    });
+    return () => { cancelled = true; };
+  }, [activeSiman, seifIdx, seif?.he, seif?.en]);
 
   useEffect(() => {
     let timer;
@@ -1297,39 +1386,62 @@ function handleWord(e) {
     lastTapRef.current = { word: raw, time: now };
     const s = stripNikud(raw);
 
-    const seifWords = seif.he.split(" ");
+    const seifWords = seif.he.split(/\s+/).filter(Boolean);
     const tapIdx = seifWords.findIndex(w => stripNikud(w) === s);
     const ctx = tapIdx >= 0 ? seifWords.slice(Math.max(0, tapIdx-3), tapIdx+4).join(" ") : "";
 
-   const seifStripped = seif.he.split(" ").map(w => stripNikud(w));
-const tapIdx2 = seifStripped.indexOf(s);
-if (tapIdx2 >= 0) {
-  const sortedPhrases = [...PHRASES].sort((a, b) => b.stripped.split(" ").length - a.stripped.split(" ").length);
-  for (const ph of sortedPhrases) {
-    const phWords = ph.stripped.split(" ");
-    for (let start = Math.max(0, tapIdx2 - phWords.length + 1); start <= tapIdx2; start++) {
-      const slice = seifStripped.slice(start, start + phWords.length);
-      if (slice.join(" ") === ph.stripped) {
-        const fullHe = seif.he.split(" ").slice(start, start + phWords.length).join(" ");
-        setPopup({ he: fullHe, en: ph.en, isPhrase: true, tappedWord: raw });
-        if (isDoubleTap) onVocabSave(fullHe, ph.en, ctx);
+    // Primary path: precomputed seif-wide alignment (one cached Claude call per seif, shared across all users)
+    const pairs = alignmentRef.current;
+    if (pairs && pairs.length && tapIdx >= 0) {
+      const pair = findAlignmentAtIndex(pairs, tapIdx);
+      if (pair && pair.en) {
+        const fullHe = pair.he;
+        const isPhrase = fullHe.trim().split(/\s+/).filter(Boolean).length > 1;
+        setPopup({ he: fullHe, en: pair.en, isPhrase, tappedWord: raw, heContext: seif.he, enContext: seif.en, ctx });
+        if (isDoubleTap) {
+          onVocabSave(fullHe, pair.en, ctx);
+          if (!isPhrase) {
+            lookupJastrow(fullHe).then(lex => { if (lex) onVocabSave(fullHe, pair.en, ctx, lex); });
+          }
+        }
         return;
       }
     }
-  }
-}
+
+    // Fallback while alignment is still loading: hardcoded phrase list
+    const seifStripped = seifWords.map(w => stripNikud(w));
+    if (tapIdx >= 0) {
+      const sortedPhrases = [...PHRASES].sort((a, b) => b.stripped.split(" ").length - a.stripped.split(" ").length);
+      for (const ph of sortedPhrases) {
+        const phWords = ph.stripped.split(" ");
+        for (let start = Math.max(0, tapIdx - phWords.length + 1); start <= tapIdx; start++) {
+          const slice = seifStripped.slice(start, start + phWords.length);
+          if (slice.join(" ") === ph.stripped) {
+            const fullHe = seifWords.slice(start, start + phWords.length).join(" ");
+            setPopup({ he: fullHe, en: ph.en, isPhrase: true, tappedWord: raw, ctx });
+            if (isDoubleTap) onVocabSave(fullHe, ph.en, ctx);
+            return;
+          }
+        }
+      }
+    }
+
+    // Last-resort fallback: per-tap Claude call
     const ck = CacheKey.ksaWord(activeSiman, seifIdx, raw);
-    setPopup({ he:raw, en:null, loading:true, cacheKey: ck, heContext: seif.he, enContext: seif.en });
-withCache(ck, () =>
-  callClaude(
-    `Hebrew text: "${seif.he}"\nEnglish translation: "${seif.en}"\nTapped Hebrew word: "${raw}"\n\nFind the English word or short phrase in the translation that corresponds to "${raw}". Reply with ONLY that word or phrase — nothing else.`,
-    "You are identifying which part of an English translation corresponds to a specific Hebrew word. Reply with ONLY the corresponding English word or phrase. No explanation, no context, no punctuation.", 20
-  )
-).then(d => {
-  const en = d.trim().replace(/^[\*\_\s]+|[\*\_\s]+$/g, "");
-  setPopup(p => p?.he === raw ? { ...p, he: raw, en, loading:false } : p);
-  if (isDoubleTap) onVocabSave(raw, en, ctx);
-}).catch(() => setPopup(p => p?.he === raw ? { ...p, en:"(translation unavailable)", loading:false } : p));
+    setPopup({ he:raw, en:null, loading:true, cacheKey: ck, heContext: seif.he, enContext: seif.en, ctx });
+    withCache(ck, () =>
+      callClaude(
+        `Hebrew text: "${seif.he}"\nEnglish translation: "${seif.en}"\nTapped Hebrew word: "${raw}"\n\nFind the English word or short phrase in the translation that corresponds to "${raw}". Reply with ONLY that word or phrase — nothing else.`,
+        "You are identifying which part of an English translation corresponds to a specific Hebrew word. Reply with ONLY the corresponding English word or phrase. No explanation, no context, no punctuation.", 20
+      )
+    ).then(d => {
+      const en = d.trim().replace(/^[\*\_\s]+|[\*\_\s]+$/g, "");
+      setPopup(p => p?.he === raw ? { ...p, he: raw, en, loading:false } : p);
+      if (isDoubleTap) {
+        onVocabSave(raw, en, ctx);
+        lookupJastrow(raw).then(lex => { if (lex) onVocabSave(raw, en, ctx, lex); });
+      }
+    }).catch(() => setPopup(p => p?.he === raw ? { ...p, en:"(translation unavailable)", loading:false } : p));
   }
 
 const hasVocab = Object.keys(seifVocab).length > 0;
@@ -1343,11 +1455,17 @@ const hasVocab = Object.keys(seifVocab).length > 0;
   return (
     <div style={{ minHeight:"100vh",background:C.bg}} onClick={() => setPopup(null)}>
       <style>{CSS}</style>
+      {showStudyTutorial && <TutorialOverlay steps={KSA_STUDY_TUTORIAL} onDone={dismissStudyTutorial} />}
       <div style={{ position:"sticky",top:0,zIndex:100,background:"rgba(245,240,235,.88)",backdropFilter:"blur(20px) saturate(1.4)",WebkitBackdropFilter:"blur(20px) saturate(1.4)",borderBottom:"0.5px solid rgba(0,0,0,.1)",paddingTop:"env(safe-area-inset-top, 0px)" }}>
         <div style={{ maxWidth:720,margin:"0 auto",padding:"10px 18px" }}>
           <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8 }}>
-            <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:14,color:C.muted,fontWeight:400 }}>‹ All Seifim</button>
-            <div style={{ fontFamily:"'Heebo',sans-serif",fontSize:15,fontWeight:700,color:C.label }}>סימן {toHebrewNumeral(activeSiman)} · סעיף {toHebrewNumeral(seifIdx+1)}</div>
+            <div style={{ display:"flex",alignItems:"center",gap:6,flexWrap:"wrap" }}>
+              {onGoToSubjects && <button onClick={onGoToSubjects} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>{fromAssignment ? "Assignment" : "Subjects"}</button>}
+              {onGoToSubjects && <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>}
+              {!fromAssignment && <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>Siman {activeSiman}</button>}
+              {!fromAssignment && <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>}
+              <span style={{ fontFamily:"inherit",fontSize:15,color:C.label,fontWeight:700 }}>Seif {seifIdx+1}</span>
+            </div>
             {badge}
           </div>
           <div className="seg-wrap">
@@ -1357,11 +1475,17 @@ const hasVocab = Object.keys(seifVocab).length > 0;
               ["kriah","Kriah" + (kriahDone?" ✓":"")],
               ["quiz","Quiz" + (mastered?" ✓":"")]
             ].map(([id, lbl]) => (
-              <button key={id} className={`tab${tab===id?" on":""}`} onClick={e => { e.stopPropagation(); setTab(id); }}>
+              <button key={id} data-tour={`ksa-tab-${id}`} className={`tab${tab===id?" on":""}`} onClick={e => { e.stopPropagation(); setTab(id); }}>
                 {lbl}{id==="vocab" && Object.keys(seifVocab).length > 0 && <span style={{ marginLeft:4, fontSize:11, color:C.muted, fontWeight:400 }}>{Object.keys(seifVocab).length}</span>}
               </button>
             ))}
           </div>
+          {fromAssignment && assignmentFromSeif !== null && assignmentToSeif !== null && assignmentFromSeif < assignmentToSeif && (
+            <div style={{ display:"flex", gap:8, marginTop:8 }}>
+              <button onClick={onPrev} disabled={seifIdx <= assignmentFromSeif} style={{ flex:1, padding:"9px", background:"none", border:`1px solid ${C.border}`, borderRadius:10, fontFamily:"inherit", fontSize:13, cursor:seifIdx>assignmentFromSeif?"pointer":"not-allowed", color:seifIdx>assignmentFromSeif?C.muted:"rgba(0,0,0,.2)", opacity:seifIdx>assignmentFromSeif?1:0.4 }}>‹ Previous Seif</button>
+              <button onClick={onNavNext} disabled={seifIdx >= assignmentToSeif} style={{ flex:1, padding:"9px", background:"none", border:`1px solid ${C.border}`, borderRadius:10, fontFamily:"inherit", fontSize:13, cursor:seifIdx<assignmentToSeif?"pointer":"not-allowed", color:seifIdx<assignmentToSeif?C.muted:"rgba(0,0,0,.2)", opacity:seifIdx<assignmentToSeif?1:0.4 }}>Next Seif ›</button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1451,7 +1575,8 @@ onBack={() => { setVocabStage("cards"); setTab("read"); }}
               />
         )}
       </div>
-      <WordPopup popup={popup} onClose={() => setPopup(null)} student={student} callClaude={callClaude} onFlagResolved={val => setPopup(p => p ? { ...p, en: val } : null)} />
+      <WordPopup popup={popup} onClose={() => setPopup(null)} student={student} callClaude={callClaude} onFlagResolved={val => setPopup(p => p ? { ...p, en: val } : null)}
+        onSave={() => { if (!popup?.he || !popup?.en) return; const c = popup.ctx || ""; onVocabSave(popup.he, popup.en, c); if (!popup.isPhrase) lookupJastrow(popup.he).then(lex => { if (lex) onVocabSave(popup.he, popup.en, c, lex); }); }} />
     </div>
   );
 }
@@ -1485,14 +1610,23 @@ function Reference() {
   );
 }
 // ── HOME ─────────────────────────────────────────────────────────────────────
-function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked, onCheck, returnToSiman, toc, activeSiman, onOpenSiman, allProgress, seifCounts, lastVisited, startWithSimanOpen }) {
+function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked, onCheck, returnToSiman, toc, activeSiman, onOpenSiman, allProgress, seifCounts, lastVisited, startWithSimanOpen, seenTutorial, onTutorialSeen, seenSimanTutorial, onSimanTutorialSeen }) {
   const filteredToc = toc;
   const [simanOpen, setSimanOpen] = useState(returnToSiman || !!startWithSimanOpen);
+  const [showTutorial, setShowTutorial] = useState(!seenTutorial);
+  function dismissTutorial() { setShowTutorial(false); onTutorialSeen?.(); }
+  const [showSimanTutorial, setShowSimanTutorial] = useState(false);
+  function dismissSimanTutorial() { setShowSimanTutorial(false); onSimanTutorialSeen?.(); }
   const [tab, setTab] = useState("study");
   const [simanSummary, setSimanSummary] = useState({});
   const [simanSearch, setSimanSearch] = useState("");
   const mastered = Object.values(seifProgress).filter(v => v === "mastered").length;
   const pct = Math.round(mastered / (SEIFIM.length || 18) * 100);
+
+  // Show siman tour the first time the siman list opens
+  useEffect(() => {
+    if (simanOpen && !seenSimanTutorial) setShowSimanTutorial(true);
+  }, [simanOpen]);
 
   useEffect(() => {
     if (!activeSiman || simanSummary[activeSiman] || SEIFIM.length === 0) return;
@@ -1510,6 +1644,8 @@ function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked,
   return (
     <div style={{ minHeight:"100vh",background:C.bg}}>
       <style>{CSS}</style>
+      {showTutorial && !simanOpen && <TutorialOverlay steps={KSA_TUTORIAL} onDone={dismissTutorial} />}
+      {showSimanTutorial && simanOpen && <TutorialOverlay steps={KSA_SIMAN_TUTORIAL} onDone={dismissSimanTutorial} />}
       <div style={{ maxWidth:780,margin:"0 auto",padding:"calc(28px + env(safe-area-inset-top, 0px)) calc(20px + env(safe-area-inset-right, 0px)) 80px calc(20px + env(safe-area-inset-left, 0px))" }}>
 
         {/* Header */}
@@ -1522,6 +1658,7 @@ function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked,
             <div style={{ fontWeight:600,fontSize:15,color:C.label }}>{student.name}</div>
             <div style={{ fontSize:12,color:C.muted }}>{student.email}</div>
             <div style={{ display:"flex",gap:6,justifyContent:"flex-end",marginTop:6 }}>
+              <button onClick={() => setShowTutorial(true)} title="How it works" style={{ background:"none",border:"1px solid rgba(0,0,0,.1)",borderRadius:980,width:28,height:28,cursor:"pointer",fontFamily:"inherit",fontSize:13,color:C.muted,display:"flex",alignItems:"center",justifyContent:"center",padding:0 }}>?</button>
               <button onClick={onLogout} style={{ background:"none",border:"1px solid rgba(0,0,0,.1)",borderRadius:980,padding:"4px 12px",cursor:"pointer",fontFamily:"inherit",fontSize:12,color:C.muted }}>Switch</button>
               <button onClick={onBack} style={{ background:"none",border:"1px solid rgba(0,0,0,.1)",borderRadius:980,padding:"4px 12px",cursor:"pointer",fontFamily:"inherit",fontSize:12,color:C.muted }}>← Subjects</button>
             </div>
@@ -1560,11 +1697,12 @@ function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked,
     </div>
     <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(80px, 1fr))", gap:8, direction:"rtl" }}>
 
-{filteredToc.filter(s => simanSearch === "" || String(s.num).includes(simanSearch) || (s.name || "").toLowerCase().includes(simanSearch.toLowerCase())).map(s => {
+{filteredToc.filter(s => simanSearch === "" || String(s.num).includes(simanSearch) || (s.name || "").toLowerCase().includes(simanSearch.toLowerCase())).map((s, si) => {
     const simanProgress = allProgress[s.num] || {};
     const masteredCount = Object.values(simanProgress).filter(v => v === "mastered").length;
     return (
       <div key={s.num}
+  data-tour={si === 0 ? "ksa-first-siman" : undefined}
   onClick={async () => { await onOpenSiman(s.num); setSimanOpen(true); }}
   onMouseEnter={e => e.currentTarget.style.boxShadow="0 3px 12px rgba(0,0,0,.13)"}
   onMouseLeave={e => e.currentTarget.style.boxShadow="0 1px 5px rgba(0,0,0,.07)"}
@@ -1603,7 +1741,13 @@ function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked,
           <div>
             {/* Back + Siman header */}
             <div style={{ marginBottom:16 }}>
-  <button onClick={() => { setSimanOpen(false); setSimanSearch(""); }} style={{ background:"none",border:"none",cursor:"pointer",fontSize:14,color:C.muted,fontFamily:"inherit",marginBottom:10,padding:0,fontWeight:400 }}>‹ All Simanim</button>
+  <div style={{ display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:14,background:"rgba(184,134,11,.08)",borderRadius:10,padding:"8px 14px" }}>
+    <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>Subjects</button>
+    <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>
+    <button onClick={() => { setSimanOpen(false); setSimanSearch(""); }} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>All Simanim</button>
+    <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>
+    <span style={{ fontFamily:"inherit",fontSize:15,color:C.label,fontWeight:700 }}>Siman {activeSiman}</span>
+  </div>
   <div style={{ background:"white",borderRadius:16,padding:"14px 18px",boxShadow:"0 1px 4px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04)" }}>
     <div style={{ fontFamily:"'Heebo',sans-serif",fontSize:22,fontWeight:700,lineHeight:1,marginBottom:4,color:C.label }}>סימן {toHebrewNumeral(activeSiman)} · Siman {activeSiman}</div>
     {simanSummary[activeSiman] && (
@@ -1631,7 +1775,7 @@ function Home({ student, seifProgress, onOpen, onLogout, onBack, vocab, checked,
                 ["reference","Kitzur + EN"],
                 ["flashcards",`Vocab${Object.keys(vocab).length > 0 ? " ("+Object.keys(vocab).length+")" : ""}`]
               ].map(([id, lbl]) => (
-                <button key={id} className={`tab${tab===id?" on":""}`} onClick={() => setTab(id)}>{lbl}</button>
+                <button key={id} data-tour={`ksa-siman-tab-${id}`} className={`tab${tab===id?" on":""}`} onClick={() => setTab(id)}>{lbl}</button>
               ))}
             </div>
 
@@ -1674,10 +1818,63 @@ const unlocked = true;                  const isMastered = st === "mastered";
 }
 // ── CLASSROOM VIEW ───────────────────────────────────────────────────────────
 
-function ClassroomView({ studentClass, student, allProgress, talmudProgress, seifCounts, onBack, onStudyKSA, onStudyTalmud, selectedAssignment, onSelectAssignment }) {
-  const [tab, setTab] = useState("assignments");
+function ClassroomView({ studentClass, student, allProgress, talmudProgress, chumashProgress, seifCounts, onBack, onStudyKSA, onStudyTalmud, onStudyChumash, selectedAssignment, onSelectAssignment, seenTutorial, onTutorialSeen }) {
+  const [tab, setTab] = useState("feed");
   const setSelectedAssignment = onSelectAssignment;
   const [assignmentCount, setAssignmentCount] = useState(0);
+  const [showTutorial, setShowTutorial] = useState(!seenTutorial);
+  function dismissTutorial() { setShowTutorial(false); onTutorialSeen?.(); }
+  const recordedCompletions = useRef(new Set());
+
+  useEffect(() => {
+    if (!selectedAssignment?.id) return;
+    if (recordedCompletions.current.has(selectedAssignment.id)) return;
+    if (student?.assignmentCompletions?.[selectedAssignment.id]) return;
+    const ad = selectedAssignment.assignmentData;
+    const ksaDone = !ad?.ksa || (ad.ksa.all ? false :
+      ad.ksa.siman
+        ? (() => {
+            const { siman, fromSeif, toSeif } = ad.ksa;
+            const from = fromSeif || 1;
+            const to = toSeif;
+            if (!to) return false;
+            const seifs = allProgress?.[siman] || {};
+            for (let i = from - 1; i <= to - 1; i++) {
+              if (seifs[i] !== "mastered") return false;
+            }
+            return true;
+          })()
+        : (ad.ksa.simanim || []).every(num => {
+            const seifs = allProgress?.[num] || {};
+            return Object.values(seifs).length > 0 && Object.values(seifs).every(v => v === "mastered");
+          })
+    );
+    const talmudDone = !ad?.talmud?.masechet || (() => {
+      const t = ad.talmud;
+      if (!t.fromSeg || !t.toSeg) return false;
+      for (let i = t.fromSeg - 1; i <= t.toSeg - 1; i++) {
+        const st = talmudProgress?.[`${t.masechet}_${t.daf}_${i}`];
+        if (!st?.kriah || !st?.quiz) return false;
+      }
+      return true;
+    })();
+    const chumashDone = !ad?.chumash?.seferName || (() => {
+      const ch = ad.chumash;
+      const from = ch.fromPasuk || 1;
+      const to = ch.toPasuk || from;
+      for (let p = from; p <= to; p++) {
+        const pp = chumashProgress?.[`${ch.seferName}_${ch.perek}_${p}`];
+        if (!pp?.read || !pp?.vocab) return false;
+        if (ch.withRashi && !pp?.rashi) return false;
+      }
+      return true;
+    })();
+    if (!(ksaDone && talmudDone && chumashDone && (ad?.ksa || ad?.talmud || ad?.chumash))) return;
+    recordedCompletions.current.add(selectedAssignment.id);
+    setDoc(doc(db, "students", student.email), {
+      assignmentCompletions: { [selectedAssignment.id]: new Date().toISOString() }
+    }, { merge: true });
+  }, [selectedAssignment, allProgress, talmudProgress, chumashProgress]);
 
   function getSimanColor(simanNum) {
     const sp = allProgress[simanNum] || {};
@@ -1707,6 +1904,7 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
   return (
     <div style={{ minHeight:"100vh", background:C.bg }}>
       <style>{CSS}</style>
+      {showTutorial && <TutorialOverlay steps={CLASSROOM_TUTORIAL} onDone={dismissTutorial} />}
       <div style={{ maxWidth:780, margin:"0 auto", padding:"calc(28px + env(safe-area-inset-top, 0px)) calc(20px + env(safe-area-inset-right, 0px)) 80px calc(20px + env(safe-area-inset-left, 0px))" }}>
 
         {/* Header */}
@@ -1718,7 +1916,10 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
           <div style={{ textAlign:"right" }}>
             <div style={{ fontWeight:600, fontSize:15, color:C.label }}>{student.name}</div>
             <div style={{ fontSize:12, color:C.muted, marginBottom:6 }}>{student.email}</div>
-            <button onClick={onBack} style={{ background:"none", border:"1px solid rgba(0,0,0,.1)", borderRadius:980, padding:"4px 12px", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.muted }}>← Subjects</button>
+            <div style={{ display:"flex", gap:6, justifyContent:"flex-end" }}>
+              <button onClick={() => setShowTutorial(true)} title="How it works" style={{ background:"none", border:"1px solid rgba(0,0,0,.1)", borderRadius:980, width:28, height:28, cursor:"pointer", fontFamily:"inherit", fontSize:13, color:C.muted, display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>?</button>
+              <button onClick={onBack} style={{ background:"none", border:"1px solid rgba(0,0,0,.1)", borderRadius:980, padding:"4px 12px", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.muted }}>← Subjects</button>
+            </div>
           </div>
         </div>
 
@@ -1731,7 +1932,7 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
         {/* Tabs */}
         <div style={{ display:"flex", gap:4, marginBottom:24, background:"rgba(0,0,0,.05)", borderRadius:12, padding:4 }}>
           {[["assignments","Assignments"], ["feed","Feed"], ["chat","Chat"]].map(([id, lbl]) => (
-            <button key={id} onClick={() => { setTab(id); setSelectedAssignment(null); }} style={{ flex:1, padding:"8px 4px", borderRadius:9, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:500, background:tab===id?"white":"transparent", color:tab===id?C.label:C.muted, boxShadow:tab===id?"0 1px 3px rgba(0,0,0,.08)":"none", transition:"all .15s", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+            <button key={id} data-tour={`classroom-tab-${id}`} onClick={() => { setTab(id); setSelectedAssignment(null); }} style={{ flex:1, padding:"8px 4px", borderRadius:9, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:500, background:tab===id?"white":"transparent", color:tab===id?C.label:C.muted, boxShadow:tab===id?"0 1px 3px rgba(0,0,0,.08)":"none", transition:"all .15s", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
               {lbl}
               {id === "assignments" && assignmentCount > 0 && (
                 <span style={{ background: tab==="assignments" ? C.brown : "rgba(92,51,23,.15)", color: tab==="assignments" ? "white" : C.brown, borderRadius:99, fontSize:10, fontWeight:700, padding:"1px 6px", lineHeight:"16px" }}>{assignmentCount}</span>
@@ -1747,21 +1948,51 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
               <button onClick={() => setSelectedAssignment(null)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:C.brown, fontFamily:"inherit", marginBottom:20, padding:0, fontWeight:500 }}>‹ Back to Assignments</button>
               {(() => {
                 const ad = selectedAssignment.assignmentData;
-                const ksaDone = !ad?.ksa || (ad.ksa.all ? false : (ad.ksa.simanim || []).every(num => {
-                  const seifs = allProgress?.[num] || {};
-                  return Object.values(seifs).length > 0 && Object.values(seifs).every(v => v === "mastered");
-                }));
-                const talmudDone = !ad?.talmud?.masechet || (() => {
+                // KSA progress
+                let ksaDone = 0, ksaTotal = 0;
+                if (ad?.ksa && !ad.ksa.all) {
+                  if (ad.ksa.siman && ad.ksa.fromSeif && ad.ksa.toSeif) {
+                    const { siman, fromSeif, toSeif } = ad.ksa;
+                    ksaTotal = toSeif - (fromSeif - 1);
+                    const seifs = allProgress?.[siman] || {};
+                    for (let i = fromSeif - 1; i <= toSeif - 1; i++) {
+                      if (seifs[i] === "mastered") ksaDone++;
+                    }
+                  } else if (ad.ksa.simanim) {
+                    for (const num of ad.ksa.simanim) {
+                      const seifs = allProgress?.[num] || {};
+                      const vals = Object.values(seifs);
+                      if (vals.length > 0 && vals.every(v => v === "mastered")) ksaDone++;
+                      ksaTotal++;
+                    }
+                  }
+                }
+                // Talmud progress
+                let talmudDone = 0, talmudTotal = 0;
+                if (ad?.talmud?.masechet && ad.talmud.fromSeg && ad.talmud.toSeg) {
                   const t = ad.talmud;
-                  if (!t.fromSeg || !t.toSeg) return false;
+                  talmudTotal = t.toSeg - (t.fromSeg - 1);
                   for (let i = t.fromSeg - 1; i <= t.toSeg - 1; i++) {
                     const st = talmudProgress?.[`${t.masechet}_${t.daf}_${i}`];
-                    if (!st?.kriah || !st?.quiz) return false;
+                    if (st?.kriah && st?.quiz) talmudDone++;
                   }
-                  return true;
-                })();
-                const isComplete = ksaDone && talmudDone && (ad?.ksa || ad?.talmud);
-                return isComplete ? (
+                }
+                // Chumash progress — count read pesukim for bar; full criteria used for "Complete" badge
+                let chumashDone = 0, chumashTotal = 0;
+                if (ad?.chumash?.seferName) {
+                  const ch = ad.chumash;
+                  const from = ch.fromPasuk || 1;
+                  const to = ch.toPasuk || from;
+                  chumashTotal = to - from + 1;
+                  for (let p = from; p <= to; p++) {
+                    const pp = chumashProgress?.[`${ch.seferName}_${ch.perek}_${p}`];
+                    if (pp?.read) chumashDone++;
+                  }
+                }
+                const totalItems = ksaTotal + talmudTotal + chumashTotal;
+                const totalDone = ksaDone + talmudDone + chumashDone;
+                const isComplete = totalItems > 0 && totalDone === totalItems;
+                if (isComplete) return (
                   <div style={{ background:"rgba(52,199,89,.1)", border:"1.5px solid rgba(52,199,89,.3)", borderRadius:14, padding:"16px 18px", marginBottom:16, display:"flex", alignItems:"center", gap:12 }}>
                     <div style={{ width:36, height:36, borderRadius:"50%", background:C.green, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -1771,7 +2002,19 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
                       <div style={{ fontSize:12, color:"#2D9A4E", marginTop:2 }}>You've finished all assigned material.</div>
                     </div>
                   </div>
-                ) : null;
+                );
+                if (totalItems === 0) return null;
+                return (
+                  <div style={{ background:"white", borderRadius:14, padding:"14px 18px", marginBottom:16, boxShadow:"0 1px 4px rgba(0,0,0,.05)" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                      <span style={{ fontSize:13, fontWeight:600, color:C.label }}>Progress</span>
+                      <span style={{ fontSize:13, fontWeight:700, color:C.brown }}>{totalDone}/{totalItems}</span>
+                    </div>
+                    <div style={{ background:"rgba(0,0,0,.07)", borderRadius:6, height:8, overflow:"hidden" }}>
+                      <div style={{ height:"100%", width:`${(totalDone/totalItems)*100}%`, background:C.brown, borderRadius:6, transition:"width .3s" }} />
+                    </div>
+                  </div>
+                );
               })()}
               <div style={{ background:"white", borderRadius:16, padding:"18px 20px", marginBottom:22, boxShadow:"0 1px 4px rgba(0,0,0,.05)" }}>
                 <div style={{ fontWeight:700, fontSize:20, color:C.label, marginBottom:4 }}>{selectedAssignment.title}</div>
@@ -1804,6 +2047,50 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
                   </div>
                 </div>
               )}
+              {/* KSA seif-specific */}
+              {selectedAssignment.assignmentData?.ksa?.siman && (
+                <div style={{ marginBottom:28 }}>
+                  <div style={{ fontWeight:700, fontSize:16, color:C.label, marginBottom:4 }}>קיצור שולחן ערוך</div>
+                  <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>
+                    {`Siman ${selectedAssignment.assignmentData.ksa.siman} · Seifim ${selectedAssignment.assignmentData.ksa.fromSeif || 1}–${selectedAssignment.assignmentData.ksa.toSeif || "?"}`}
+                  </div>
+                  {(() => {
+                    const { siman, fromSeif, toSeif } = selectedAssignment.assignmentData.ksa;
+                    const from = fromSeif || 1;
+                    if (!toSeif) {
+                      return (
+                        <div onClick={() => onStudyKSA(siman)}
+                          style={{ background:"white", borderRadius:14, padding:"16px 18px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.05)" }}>
+                          <div style={{ fontWeight:600, fontSize:15, color:C.label }}>Siman {siman} → Study now</div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                        {Array.from({ length: toSeif - from + 1 }, (_, i) => {
+                          const seifIdx = from - 1 + i;
+                          const seifNum = from + i;
+                          const status = allProgress?.[siman]?.[seifIdx];
+                          return (
+                            <div key={seifIdx} onClick={() => onStudyKSA(siman, seifIdx, from - 1, toSeif - 1)}
+                              onMouseEnter={e => e.currentTarget.style.boxShadow="0 3px 12px rgba(0,0,0,.13)"}
+                              onMouseLeave={e => e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.05)"}
+                              style={{ background:"white", borderRadius:14, padding:"14px 18px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.05)", display:"flex", alignItems:"center", gap:12, transition:"box-shadow .15s" }}>
+                              <div style={{ width:34, height:34, borderRadius:"50%", background: status === "mastered" ? "rgba(52,199,89,.15)" : "rgba(0,0,0,.05)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                                {status === "mastered"
+                                  ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.green} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                  : <span style={{ fontSize:13, fontWeight:700, color:C.muted }}>{seifNum}</span>}
+                              </div>
+                              <div style={{ fontWeight:600, fontSize:15, color:C.label }}>Seif {seifNum}</div>
+                              {status === "mastered" && <div style={{ marginLeft:"auto", fontSize:12, color:C.green, fontWeight:600 }}>Mastered</div>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
               {/* Talmud assignment */}
               {selectedAssignment.assignmentData?.talmud?.masechet && (() => {
                 const t = selectedAssignment.assignmentData.talmud;
@@ -1813,7 +2100,7 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
                   <div style={{ marginBottom:28 }}>
                     <div style={{ fontWeight:700, fontSize:16, color:C.label, marginBottom:4 }}>תלמוד</div>
                     <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{t.masechet} · {t.daf} · {segLabel}</div>
-                    <div onClick={() => onStudyTalmud(t.masechet, t.daf, t.fromSeg, t.toSeg, studentClass.progressionLocked)}
+                    <div onClick={() => onStudyTalmud(t.masechet, t.daf, t.fromSeg, t.toSeg)}
                       onMouseEnter={e => e.currentTarget.style.boxShadow="0 3px 12px rgba(0,0,0,.13)"}
                       onMouseLeave={e => e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.07)"}
                       style={{ background:"white", borderRadius:14, padding:"20px 18px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04)", display:"flex", alignItems:"center", gap:16 }}>
@@ -1821,6 +2108,28 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
                       <div>
                         <div style={{ fontWeight:600, fontSize:15, color:C.label }}>{t.masechet}</div>
                         <div style={{ fontSize:13, color:C.muted }}>{t.daf} · {segLabel}</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* Chumash assignment */}
+              {selectedAssignment.assignmentData?.chumash?.seferName && (() => {
+                const ch = selectedAssignment.assignmentData.chumash;
+                const pasukLabel = ch.fromPasuk ? (ch.toPasuk && ch.toPasuk !== ch.fromPasuk ? `Pesukim ${ch.fromPasuk}–${ch.toPasuk}` : `Pasuk ${ch.fromPasuk}`) : "Full perek";
+                const HE_SEFER = { Bereishit:"בְּרֵאשִׁית", Shemot:"שְׁמוֹת", Vayikra:"וַיִּקְרָא", Bamidbar:"בַּמִּדְבָּר", Devarim:"דְּבָרִים" };
+                return (
+                  <div style={{ marginBottom:28 }}>
+                    <div style={{ fontWeight:700, fontSize:16, color:C.label, marginBottom:4 }}>חומש</div>
+                    <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{ch.seferName} · Perek {ch.perek} · {pasukLabel}</div>
+                    <div onClick={() => onStudyChumash(ch.seferName, ch.perek, ch.fromPasuk, ch.toPasuk)}
+                      onMouseEnter={e => e.currentTarget.style.boxShadow="0 3px 12px rgba(0,0,0,.13)"}
+                      onMouseLeave={e => e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.07)"}
+                      style={{ background:"white", borderRadius:14, padding:"20px 18px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04)", display:"flex", alignItems:"center", gap:16 }}>
+                      <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:28, fontWeight:700, color:C.label }}>{HE_SEFER[ch.seferName] || ch.seferName}</div>
+                      <div>
+                        <div style={{ fontWeight:600, fontSize:15, color:C.label }}>{ch.seferName}</div>
+                        <div style={{ fontSize:13, color:C.muted }}>Perek {ch.perek} · {pasukLabel}</div>
                       </div>
                     </div>
                   </div>
@@ -1837,6 +2146,7 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
               onCountChange={setAssignmentCount}
               allProgress={allProgress}
               talmudProgress={talmudProgress}
+              chumashProgress={chumashProgress}
             />
           )
         )}
@@ -1847,6 +2157,10 @@ function ClassroomView({ studentClass, student, allProgress, talmudProgress, sei
             classCode={studentClass.code}
             isTeacher={false}
             currentUser={student}
+            onSelectAssignment={item => { setSelectedAssignment(item); setTab("assignments"); }}
+            allProgress={allProgress}
+            talmudProgress={talmudProgress}
+            chumashProgress={chumashProgress}
           />
         )}
 
@@ -1871,6 +2185,7 @@ function SubjectSelector({ student, onSelect, onLogout, studentClasses, onJoined
   const [joinCode, setJoinCode] = useState("");
   const [joinMsg, setJoinMsg] = useState(null);
   const [joining, setJoining] = useState(false);
+  const [showClasses, setShowClasses] = useState(false);
 
   async function handleJoin() {
     if (!joinCode.trim()) return;
@@ -1897,8 +2212,51 @@ function SubjectSelector({ student, onSelect, onLogout, studentClasses, onJoined
           </svg>
         </div>
         <h1 style={{ fontFamily:"'Heebo',sans-serif", fontSize:34, fontWeight:700, marginBottom:4, color:C.label, letterSpacing:"-0.02em" }}>KITZ</h1>
-        <p style={{ color:C.muted, fontSize:15, marginBottom:40 }}>Torah Studies Fluency</p>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:studentClasses.length ? 12 : 20 }}>
+        <p style={{ color:C.muted, fontSize:15, marginBottom:28 }}>Torah Studies Fluency</p>
+        {/* ── My Classes (collapsible) ── */}
+        {studentClasses.length > 0 && (
+          <div style={{ marginBottom:16 }}>
+            <div onClick={() => setShowClasses(s => !s)}
+              style={{ background:"white", borderRadius:20, padding:"20px 22px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.06),0 6px 20px rgba(0,0,0,.06)", display:"flex", alignItems:"center", gap:16, transition:"all .18s", borderLeft:`4px solid ${C.brown}` }}
+              onMouseEnter={e => { e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,.08),0 12px 32px rgba(0,0,0,.1)"; }}
+              onMouseLeave={e => { e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.06),0 6px 20px rgba(0,0,0,.06)"; }}>
+              <div style={{ width:46,height:46,background:"rgba(92,51,23,.08)",borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={C.brown} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+              </div>
+              <div style={{ flex:1, textAlign:"left" }}>
+                <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:17, fontWeight:700, color:C.label }}>My Classes</div>
+                <div style={{ fontSize:12, color:C.muted }}>{studentClasses.length} class{studentClasses.length > 1 ? "es" : ""}</div>
+              </div>
+              <span style={{ color:C.muted, fontSize:18, transition:"transform .2s", display:"inline-block", transform: showClasses ? "rotate(90deg)" : "none" }}>›</span>
+            </div>
+            {showClasses && (
+              <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:8 }}>
+                {studentClasses.map(cls => (
+                  <div key={cls.code} onClick={() => onSelect("classroom", cls)} style={{ background:"white", borderRadius:16, padding:"16px 20px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.04)", display:"flex", alignItems:"center", gap:14, transition:"all .18s", borderLeft:`3px solid ${C.brown}` }}
+                    onMouseEnter={e => { e.currentTarget.style.background="rgba(92,51,23,.03)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background="white"; }}>
+                    <div style={{ flex:1, textAlign:"left" }}>
+                      <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:15, fontWeight:700, color:C.label, marginBottom:2 }}>{cls.name}</div>
+                      <div style={{ fontSize:12, color:C.muted }}>
+                        {[
+                          cls.assignments?.ksa?.simanim && `KSA ${Math.min(...cls.assignments.ksa.simanim)}–${Math.max(...cls.assignments.ksa.simanim)}`,
+                          cls.assignments?.talmud?.masechtos?.length && `Talmud · ${cls.assignments.talmud.masechtos.slice(0,2).join(", ")}${cls.assignments.talmud.masechtos.length > 2 ? "…" : ""}`,
+                          "Chat"
+                        ].filter(Boolean).join(" · ") || "Chat & assignments"}
+                      </div>
+                    </div>
+                    <span style={{ color:C.muted, fontSize:18 }}>›</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Self-Study ── */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:20 }}>
           <div onClick={() => onSelect("ksa")} style={{ background:"white", borderRadius:20, padding:"28px 16px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.06),0 6px 20px rgba(0,0,0,.06)", transition:"all .18s" }}
             onMouseEnter={e => { e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,.08),0 12px 32px rgba(0,0,0,.1)"; e.currentTarget.style.transform="translateY(-2px)"; }}
             onMouseLeave={e => { e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.06),0 6px 20px rgba(0,0,0,.06)"; e.currentTarget.style.transform="none"; }}>
@@ -1917,31 +2275,16 @@ function SubjectSelector({ student, onSelect, onLogout, studentClasses, onJoined
             <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:17, fontWeight:700, marginBottom:4, color:C.label }}>תלמוד</div>
             <div style={{ fontSize:12, color:C.muted }}>Talmud</div>
           </div>
-        </div>
-
-        {/* Classroom tiles — one per class */}
-        {studentClasses.map(cls => (
-          <div key={cls.code} onClick={() => onSelect("classroom", cls)} style={{ background:"white", borderRadius:20, padding:"20px 22px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.06),0 6px 20px rgba(0,0,0,.06)", marginBottom:12, display:"flex", alignItems:"center", gap:16, transition:"all .18s", borderLeft:`4px solid ${C.brown}` }}
+          <div onClick={() => onSelect("chumash")} style={{ background:"white", borderRadius:20, padding:"28px 16px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.06),0 6px 20px rgba(0,0,0,.06)", transition:"all .18s", position:"relative" }}
             onMouseEnter={e => { e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,.08),0 12px 32px rgba(0,0,0,.1)"; e.currentTarget.style.transform="translateY(-2px)"; }}
             onMouseLeave={e => { e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.06),0 6px 20px rgba(0,0,0,.06)"; e.currentTarget.style.transform="none"; }}>
-            <div style={{ width:46,height:46,background:"rgba(92,51,23,.08)",borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={C.brown} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
-              </svg>
+            <div style={{ width:44,height:44,background:"rgba(46,125,50,.1)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px" }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2E7D32" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             </div>
-            <div style={{ flex:1, textAlign:"left" }}>
-              <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:17, fontWeight:700, color:C.label, marginBottom:3 }}>{cls.name}</div>
-              <div style={{ fontSize:12, color:C.muted }}>
-                {[
-                  cls.assignments?.ksa?.simanim && `KSA ${Math.min(...cls.assignments.ksa.simanim)}–${Math.max(...cls.assignments.ksa.simanim)}`,
-                  cls.assignments?.talmud?.masechtos?.length && `Talmud · ${cls.assignments.talmud.masechtos.slice(0,2).join(", ")}${cls.assignments.talmud.masechtos.length > 2 ? "…" : ""}`,
-                  "Chat"
-                ].filter(Boolean).join(" · ") || "Chat & assignments"}
-              </div>
-            </div>
-            <span style={{ color:C.muted, fontSize:20, fontWeight:300 }}>›</span>
+            <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:17, fontWeight:700, marginBottom:4, color:C.label }}>חומש</div>
+            <div style={{ fontSize:12, color:C.muted }}>Chumash</div>
           </div>
-        ))}
+        </div>
 
         {/* Join Class */}
         {showJoin ? (
@@ -1976,6 +2319,8 @@ function Login({ onLogin, onTeacherPortal }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [regEmail, setRegEmail] = useState("");
+  const [regPassword, setRegPassword] = useState("");
   const [step, setStep] = useState("email");
   const [checking, setChecking] = useState(false);
 const [err, setErr] = useState("");
@@ -2005,12 +2350,7 @@ const [showPw, setShowPw] = useState(false);
 async function checkEmail() {
   const e = email.trim().toLowerCase();
   if (!e.includes("@")) return;
-  setChecking(true);
-  setErr("");
-  const existing = await loadStudent(e);
-  setChecking(false);
-  if (existing) setStep("password");
-  else setStep("register");
+  setStep("password");
 }
 
 async function login() {
@@ -2019,30 +2359,26 @@ async function login() {
   setErr("");
   try {
     await signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
-    const data = await loadStudent(email.trim().toLowerCase());
-    onLogin(data);
+    // onAuthStateChanged handles loading teacher or student data.
+    // setChecking(false) here so button never stays permanently stuck.
   } catch (e) {
-    if (e.code === "auth/user-not-found" || e.code === "auth/invalid-credential") {
-      setStep("register");
-      setErr("Please set a password for your existing account.");
-    } else {
-      setErr("Incorrect password. Please try again.");
-    }
+    setErr("Incorrect email or password. Please try again.");
   }
   setChecking(false);
 }
 
   async function register() {
-    if (!name.trim() || !password.trim()) return;
+    const e = regEmail.trim().toLowerCase();
+    if (!name.trim() || !regPassword.trim() || !e.includes("@")) return;
     setChecking(true);
     setErr("");
     try {
-      await createUserWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
-      const profile = { email: email.trim().toLowerCase(), name: name.trim() };
-      await saveStudent(profile.email, { name: profile.name, email: profile.email, allProgress: {}, allVocab: {}, allChecked: {}, allScores: {} });
-      onLogin(profile);
+      await createUserWithEmailAndPassword(auth, e, regPassword);
+      await saveStudent(e, { name: name.trim(), email: e, allProgress: {}, allVocab: {}, allChecked: {}, allScores: {} });
+      onLogin({ email: e, name: name.trim() });
     } catch (e) {
       if (e.code === "auth/weak-password") setErr("Password must be at least 6 characters.");
+      else if (e.code === "auth/email-already-in-use") setErr("An account with this email already exists.");
       else setErr("Could not create account. Try again.");
     }
     setChecking(false);
@@ -2076,6 +2412,7 @@ async function login() {
             <img src="https://www.google.com/favicon.ico" style={{ width:16,height:16 }}/>
             Continue with Google
           </button>
+          <button onClick={() => { setStep("register"); setErr(""); }} style={{ background:"none",border:"none",cursor:"pointer",marginTop:12,color:C.muted,fontFamily:"inherit",fontSize:13 }}>New here? <span style={{ color:C.brown, fontWeight:500 }}>Create account →</span></button>
         </>}
 
         {step === "password" && <>
@@ -2100,11 +2437,12 @@ async function login() {
         </>}
 
         {step === "register" && <>
-          <p style={{ fontSize:14,color:C.muted,marginBottom:14 }}>New account for <strong>{email}</strong></p>
+          <p style={{ fontSize:14,color:C.muted,marginBottom:14 }}>Create your account</p>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="Your full name" style={inputStyle} autoFocus />
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && register()} placeholder="Choose a password" style={inputStyle} />
+          <input value={regEmail} onChange={e => setRegEmail(e.target.value)} placeholder="Email address" style={inputStyle} />
+          <input type="password" value={regPassword} onChange={e => setRegPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && register()} placeholder="Choose a password" style={inputStyle} />
           {err && <p style={{ color:C.red,fontSize:13,marginBottom:8 }}>{err}</p>}
-          <Btn style={{ width:"100%",marginBottom:0 }} onClick={register} disabled={!name.trim() || !password.trim() || checking}>{checking ? "Creating…" : "Create Account"}</Btn>
+          <Btn style={{ width:"100%",marginBottom:0 }} onClick={register} disabled={!name.trim() || !regPassword.trim() || !regEmail.includes("@") || checking}>{checking ? "Creating…" : "Create Account"}</Btn>
           <button onClick={() => { setStep("email"); setErr(""); }} style={{ background:"none",border:"none",cursor:"pointer",marginTop:12,color:C.muted,fontFamily:"inherit",fontSize:13 }}>← Back</button>
         </>}
         <div style={{ marginTop:24, paddingTop:18, borderTop:"0.5px solid rgba(0,0,0,.07)", textAlign:"center" }}>
@@ -2691,7 +3029,10 @@ setTimeout(() => inputRef.current?.focus(), 50);
   );
 }
 
-function TalmudSegmentStudy({ segment, segIdx, daf, masechet, status, onMastered, onBack, backLabel, onVocabSave, onWordMastered, segVocab, onVocabDone, onVocabReset, onKriahDone, onPrev, onNext, totalSegments, hasNextPage, student }) {    const [tab, setTab] = useState("read");
+function TalmudSegmentStudy({ segment, segIdx, daf, masechet, status, onMastered, onBack, backLabel, onGoToSubjects, onGoToMasechet, onVocabSave, onWordMastered, segVocab, onVocabDone, onVocabReset, onKriahDone, onPrev, onNext, totalSegments, hasNextPage, student, fromAssignment, seenTutorial, onTutorialSeen }) {
+  const [tab, setTab] = useState("read");
+  const [showStudyTutorial, setShowStudyTutorial] = useState(!seenTutorial);
+  function dismissStudyTutorial() { setShowStudyTutorial(false); onTutorialSeen?.(); }
   const [popup, setPopup] = useState(null);
   const lastTapTalmudRef = useRef({ word: null, time: 0 });
   const [vocabStage, setVocabStage] = useState("cards");
@@ -2713,9 +3054,7 @@ useEffect(() => {
 
 useEffect(() => {
   if (!showTranslit || translit) return;
-  withCache(CacheKey.talmudTranslit(masechet, daf, segIdx), () =>
-    callClaude(segment.he, TRANSLITERATION_SYSTEM_PROMPT, 300)
-  ).then(r => { if (r) setTranslit(r); });
+  setTranslit(transliterateSegment(segment.he));
 }, [showTranslit]);
   const [showMastered, setShowMastered] = useState(false);
 
@@ -2746,8 +3085,8 @@ useEffect(() => {
           if (!rect.width && !rect.height) return;
           setSelectionPopup({ he: text, x: rect.left + rect.width / 2, y: rect.top - 12, loading: true, en: null });
           callClaude(
-            `Full Sefaria translation of the passage: "${segment.en}"\n\nThe student highlighted this Aramaic/Hebrew phrase: "${text}"\n\nFind the corresponding portion of the Sefaria translation above. Reply with ONLY that portion, nothing else.`,
-            "You are extracting a phrase from an existing translation. Reply only with the matching portion.", 100
+            `Sefaria English translation of the passage (may be partial): "${segment.en}"\n\nThe student highlighted this Aramaic/Hebrew phrase: "${text}"\n\nIf this phrase appears in the translation above, reply with ONLY the corresponding English portion. If the phrase is NOT covered by the translation, translate it directly from Aramaic/Hebrew. Reply with ONLY the English translation — no explanations, no meta-commentary.`,
+            "You are a Talmud translation assistant. Either extract the matching English from the provided translation, or translate the Aramaic/Hebrew phrase directly. Reply with ONLY the English — never say you cannot find it.", 100
           ).then(en => setSelectionPopup(p => p?.he === text ? { ...p, en: en.trim(), loading: false } : p))
            .catch(() => setSelectionPopup(null));
         } catch(e) { setSelectionPopup(null); }
@@ -2795,6 +3134,7 @@ useEffect(() => {
   return (
     <div style={{ minHeight:"100vh", background:C.bg }} onClick={() => setPopup(null)}>
       <style>{CSS}</style>
+      {showStudyTutorial && <TutorialOverlay steps={TALMUD_STUDY_TUTORIAL} onDone={dismissStudyTutorial} />}
       {showMastered && (
   <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,.45)", display:"flex", alignItems:"center", justifyContent:"center" }} onClick={() => setShowMastered(false)}>
     <div style={{ background:"white", borderRadius:20, padding:"40px 32px", maxWidth:340, width:"92%", textAlign:"center", border:`0.5px solid ${C.border}` }} onClick={e => e.stopPropagation()}>
@@ -2823,7 +3163,15 @@ useEffect(() => {
       <div style={{ position:"sticky", top:0, zIndex:100, background:"rgba(245,240,235,.88)", backdropFilter:"blur(20px) saturate(1.4)", WebkitBackdropFilter:"blur(20px) saturate(1.4)", borderBottom:"0.5px solid rgba(0,0,0,.1)", paddingTop:"env(safe-area-inset-top, 0px)" }}>
         <div style={{ maxWidth:720, margin:"0 auto", padding:"10px 18px" }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-            <button onClick={onBack} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:14, color:C.brown, fontWeight:500 }}>{backLabel || `‹ ${masechet} ${daf}`}</button>
+            <div style={{ display:"flex",alignItems:"center",gap:6,flexWrap:"wrap" }}>
+              {onGoToSubjects && <button onClick={onGoToSubjects} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>{fromAssignment ? "Assignment" : "Subjects"}</button>}
+              {onGoToSubjects && <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>}
+              {onGoToMasechet && <button onClick={onGoToMasechet} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>{masechet}</button>}
+              {onGoToMasechet && <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>}
+              <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>{daf}</button>
+              <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>
+              <span style={{ fontFamily:"inherit",fontSize:15,color:C.label,fontWeight:700 }}>Seg {segIdx+1}</span>
+            </div>
             <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:13, color:C.muted }}>{segment.he.split(" ").slice(0, 3).join(" ")}…</div>
             {badge}
           </div>
@@ -2834,7 +3182,7 @@ useEffect(() => {
               ["kriah","Kriah" + (kriahDone?" ✓":"")],
               ["quiz","Quiz" + (quizDone?" ✓":"")]
             ].map(([id, lbl]) => (
-              <button key={id} className={`tab${tab===id?" on":""}`} onClick={e => { e.stopPropagation(); setTab(id); }}>
+              <button key={id} data-tour={`talmud-tab-${id}`} className={`tab${tab===id?" on":""}`} onClick={e => { e.stopPropagation(); setTab(id); }}>
                 {lbl}{id==="vocab" && Object.keys(segVocab||{}).length > 0 && <span style={{ marginLeft:4, fontSize:11, color:C.muted, fontWeight:400 }}>{Object.keys(segVocab||{}).length}</span>}
               </button>
             ))}
@@ -2998,7 +3346,7 @@ useEffect(() => {
           setTosfotTranslations(t => ({...t, [i]: null}));
           const trans = await callClaude(
             `Translate this Tosafot into clear English for a Modern Orthodox high school student:\n\n"${(entry.dibbur ? entry.dibbur + " " : "") + entry.rest}"\n\nContext: Tosafot on ${masechet} ${daf}. Translation only — no preamble.`,
-            "You are translating Tosafot's Talmud commentary into clear, accessible English for high school students. Translate faithfully but naturally. No preamble or labels.", 200
+            "You are translating Tosafot's Talmud commentary into clear, accessible English for high school students. Translate faithfully but naturally. No preamble or labels.", 1500
           );
           setTosfotTranslations(t => ({...t, [i]: trans.replace(/^#{1,6}\s+.*\n?/gm,"").replace(/\*\*/g,"").replace(/\*/g,"").trim()}));
         }} style={{ marginTop:6, background:"none", border:`1px solid ${C.border}`, borderRadius:7, padding:"3px 10px", fontSize:12, color:C.muted, cursor:"pointer", fontFamily:"inherit" }}>
@@ -3076,35 +3424,38 @@ onPass={() => { onKriahDone(); setTab("quiz"); }}
   />
 )}
       </div>
-      <WordPopup popup={popup} onClose={() => setPopup(null)} student={student} callClaude={callClaude} onFlagResolved={val => setPopup(p => p ? { ...p, en: val } : null)} />
+      <WordPopup popup={popup} onClose={() => setPopup(null)} student={student} callClaude={callClaude} onFlagResolved={val => setPopup(p => p ? { ...p, en: val } : null)}
+        onSave={() => { if (popup?.he && popup?.en) onVocabSave(popup.he, popup.en); }} />
     </div>
   );
 }
 
-function TalmudAnki({ anki, onUpdate }) {
+function TalmudAnki({ deck, deckId, anki, onUpdate }) {
+const CARDS = deck?.cards || [];
+const DKEY = deckId || deck?.id || "talmud-core-250";
 const today = new Date().toLocaleDateString('en-CA');
 const NEW_CARDS_PER_DAY = 10;
 
 function getDailyNew() {
-  const saved = JSON.parse(localStorage.getItem("talmud_daily_new") || "{}");
+  const saved = JSON.parse(localStorage.getItem(`talmud_daily_new_${DKEY}`) || "{}");
   if (saved.date !== today) return [];
   return saved.cards || [];
 }
 
 function saveDailyNew(cards) {
-  localStorage.setItem("talmud_daily_new", JSON.stringify({ date: today, cards }));
+  localStorage.setItem(`talmud_daily_new_${DKEY}`, JSON.stringify({ date: today, cards }));
 }
 
 function getQueue() {
   const dailyNew = getDailyNew();
   const due = [], newCards = [];
-  TALMUD_VOCAB.forEach(card => {
+  CARDS.forEach(card => {
     const state = anki[card.he];
     if (!state) {
       if (dailyNew.includes(card.he)) newCards.push(card);
     } else if (state.dueDate <= today) due.push(card);
   });
-  const allNew = TALMUD_VOCAB.filter(c => !anki[c.he] && !dailyNew.includes(c.he));
+  const allNew = CARDS.filter(c => !anki[c.he] && !dailyNew.includes(c.he));
   const toAdd = allNew.slice(0, Math.max(0, NEW_CARDS_PER_DAY - dailyNew.length));
   const updatedDaily = [...dailyNew, ...toAdd.map(c => c.he)];
   saveDailyNew(updatedDaily);
@@ -3117,7 +3468,7 @@ const [revealed, setRevealed] = useState(false);
 const [filter, setFilter] = useState("all");
 
 const [done, setDone] = useState(() => {
-  const saved = JSON.parse(localStorage.getItem("talmud_anki_done") || "{}");
+  const saved = JSON.parse(localStorage.getItem(`talmud_anki_done_${DKEY}`) || "{}");
   return saved.date === today;
 });
 
@@ -3162,7 +3513,7 @@ const card = filteredQueue[0] || queue[0];
   }
 
 function getStreak() {
-  const saved = JSON.parse(localStorage.getItem("talmud_streak") || "{}");
+  const saved = JSON.parse(localStorage.getItem(`talmud_streak_${DKEY}`) || "{}");
   if (!saved.lastDate) return 0;
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -3173,7 +3524,7 @@ function getStreak() {
 }
 
 function updateStreak() {
-  const saved = JSON.parse(localStorage.getItem("talmud_streak") || "{}");
+  const saved = JSON.parse(localStorage.getItem(`talmud_streak_${DKEY}`) || "{}");
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const yStr = yesterday.toLocaleDateString('en-CA');
@@ -3185,7 +3536,7 @@ function updateStreak() {
   } else {
     streak = 1;
   }
-  localStorage.setItem("talmud_streak", JSON.stringify({ lastDate: today, streak }));
+  localStorage.setItem(`talmud_streak_${DKEY}`, JSON.stringify({ lastDate: today, streak }));
   return streak;
 }
 
@@ -3204,7 +3555,7 @@ function updateStreak() {
     setRevealed(false);
 
 if (newQueue.length === 0 && rating !== 0) {
-  localStorage.setItem("talmud_anki_done", JSON.stringify({ date: today }));
+  localStorage.setItem(`talmud_anki_done_${DKEY}`, JSON.stringify({ date: today }));
   setDone(true);
 }
 }
@@ -3212,11 +3563,11 @@ if (newQueue.length === 0 && rating !== 0) {
   const diffColor = { 1:C.green, 2:"#A05A00", 3:C.red };
   const diffBg = { 1:"rgba(52,199,89,.1)", 2:"rgba(184,134,11,.1)", 3:"rgba(255,59,48,.08)" };
 
-  const totalDue = TALMUD_VOCAB.filter(c => {
+  const totalDue = CARDS.filter(c => {
     const s = anki[c.he];
     return !s || s.dueDate <= today;
   }).length;
-  const totalMastered = TALMUD_VOCAB.filter(c => (anki[c.he]?.interval || 0) >= 21).length;
+  const totalMastered = CARDS.filter(c => (anki[c.he]?.interval || 0) >= 21).length;
 
 if (done || filteredQueue.length === 0) {
   const streak = getStreak();
@@ -3236,7 +3587,7 @@ if (done || filteredQueue.length === 0) {
           <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.04em", textTransform:"uppercase", marginTop:2 }}>Mastered</div>
         </div>
         <div style={{ background:"rgba(0,122,255,.08)", borderRadius:14, padding:"14px 18px" }}>
-          <div style={{ fontSize:26, fontWeight:700, color:"#003D80" }}>{TALMUD_VOCAB.filter(c => !anki[c.he]).length}</div>
+          <div style={{ fontSize:26, fontWeight:700, color:"#003D80" }}>{CARDS.filter(c => !anki[c.he]).length}</div>
           <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.04em", textTransform:"uppercase", marginTop:2 }}>Remaining</div>
         </div>
       </div>
@@ -3255,7 +3606,7 @@ if (done || filteredQueue.length === 0) {
 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8, marginBottom:16 }}>
         {[
           ["Due", totalDue, "rgba(0,122,255,.08)", "#003D80"],
-          ["New", TALMUD_VOCAB.filter(c => !anki[c.he]).length, "rgba(184,134,11,.08)", "#6B4E1A"],
+          ["New", CARDS.filter(c => !anki[c.he]).length, "rgba(184,134,11,.08)", "#6B4E1A"],
           ["Mastered", totalMastered, "rgba(52,199,89,.08)", "#1A5C2A"],
           ["Streak", getStreak(), "rgba(92,51,23,.08)", C.brown],
         ].map(([label, val, bg, color]) => (
@@ -3268,7 +3619,7 @@ if (done || filteredQueue.length === 0) {
 
       {/* Progress bar */}
       <div style={{ height:4, background:C.border, borderRadius:2, marginBottom:16, overflow:"hidden" }}>
-        <div style={{ height:"100%", width:`${(totalMastered/TALMUD_VOCAB.length)*100}%`, background:C.green, transition:"width .4s" }}/>
+        <div style={{ height:"100%", width:`${(totalMastered/Math.max(CARDS.length,1))*100}%`, background:C.green, transition:"width .4s" }}/>
       </div>
 
       {/* Card */}
@@ -3277,7 +3628,7 @@ if (done || filteredQueue.length === 0) {
 
         {/* Badges */}
         <div style={{ position:"absolute", top:12, left:16, display:"flex", gap:6 }}>
-          <span style={{ fontSize:11, background:diffBg[card.difficulty], color:diffColor[card.difficulty], borderRadius:20, padding:"2px 10px", fontWeight:500 }}>{card.difficultyLabel}</span>
+          {card.difficultyLabel && <span style={{ fontSize:11, background:diffBg[card.difficulty]||"rgba(0,0,0,.05)", color:diffColor[card.difficulty]||C.muted, borderRadius:20, padding:"2px 10px", fontWeight:500 }}>{card.difficultyLabel}</span>}
           {card.core && <span style={{ fontSize:11, background:"rgba(184,134,11,.1)", color:"#6B4E1A", borderRadius:20, padding:"2px 10px" }}>Core</span>}
         </div>
         <span style={{ position:"absolute", top:14, right:16, fontSize:11, color:C.muted }}>
@@ -3322,8 +3673,234 @@ if (done || filteredQueue.length === 0) {
   );
 }
 
-function TalmudHome({ student, onBack, onLogout, talmudProgress, onMastered, onVocabSave, onWordMastered, onVocabDone, onVocabReset, onKriahDone, talmudVocab, talmudAnki, onAnkiUpdate, defaultMasechet, defaultDaf, defaultFromSeg, defaultToSeg, fromAssignment, lastVisitedTalmud, onSetLastVisitedTalmud, progressionLocked }) {
+// ── DECK EDITOR (create / edit a Talmud Key deck; manual + AI) ─────────────────
+function DeckEditor({ deck, student, onCancel, onSaved }) {
+  const [title, setTitle] = useState(deck?.title || "");
+  const [description, setDescription] = useState(deck?.description || "");
+  const [cards, setCards] = useState(deck?.cards?.map(c => ({ he: c.he, en: c.en })) || [{ he: "", en: "" }]);
+  const [prompt, setPrompt] = useState("");
+  const [genLoading, setGenLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function generate() {
+    if (!prompt.trim() || genLoading) return;
+    setGenLoading(true); setErr("");
+    try {
+      const raw = await callClaude(
+        `Create a Talmud/Gemara vocabulary flashcard deck for this request:\n"${prompt.trim()}"\n\nThe request may be broad (e.g. a category of terms that appear throughout Shas) or narrow. Include the key Hebrew/Aramaic words or short phrases with concise English meanings.\n\nReturn ONLY a JSON array: [{"he":"Hebrew/Aramaic term","en":"concise English meaning"}]. Between 8 and 40 cards. No duplicates. No markdown, no code fences, no commentary.`,
+        "You are a Talmud vocabulary expert. Output ONLY a valid JSON array of {he,en} objects. No prose.", 3500
+      );
+      const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+      const clean = (Array.isArray(parsed) ? parsed : []).filter(c => c && c.he && c.en).map(c => ({ he: String(c.he).trim(), en: String(c.en).trim() }));
+      if (!clean.length) throw new Error("empty");
+      setCards(cs => [...cs.filter(c => c.he.trim() || c.en.trim()), ...clean]);
+      setPrompt("");
+    } catch (e) {
+      setErr("Couldn't generate cards from that. Try rephrasing your request.");
+    }
+    setGenLoading(false);
+  }
+
+  async function save() {
+    const clean = cards.filter(c => c.he.trim() && c.en.trim()).map(c => ({ he: c.he.trim(), en: c.en.trim() }));
+    if (!title.trim()) { setErr("Give your deck a title."); return; }
+    if (!clean.length) { setErr("Add at least one card (Hebrew + English)."); return; }
+    setSaving(true); setErr("");
+    const id = deck?.id || newDeckId();
+    const payload = {
+      id, title: title.trim(), description: description.trim(),
+      ownerEmail: deck?.ownerEmail || student.email,
+      ownerName: deck?.ownerName || student.name || student.email,
+      cards: clean, cardCount: clean.length, published: true,
+      createdAt: deck?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    try { await saveDeck(payload); onSaved(payload); }
+    catch (e) { setErr("Save failed. Please try again."); setSaving(false); }
+  }
+
+  const inputStyle = { width:"100%", border:`1px solid ${C.border}`, borderRadius:10, padding:"10px 12px", fontSize:15, fontFamily:"inherit", outline:"none", background:"#fff", color:C.label };
+
+  return (
+    <div>
+      <button onClick={onCancel} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:14, color:C.muted, padding:0, marginBottom:14 }}>‹ Cancel</button>
+      <h2 style={{ fontSize:20, fontWeight:700, color:C.label, marginBottom:16 }}>{deck ? "Edit Deck" : "New Deck"}</h2>
+
+      <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Deck title" style={{ ...inputStyle, marginBottom:10, fontWeight:600 }} />
+      <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Short description (optional)" rows={2} style={{ ...inputStyle, marginBottom:18, resize:"vertical" }} />
+
+      <div style={{ background:"rgba(184,134,11,.06)", border:"1px solid rgba(184,134,11,.15)", borderRadius:14, padding:16, marginBottom:20 }}>
+        <div style={{ fontSize:13, fontWeight:600, color:"#6B4E1A", marginBottom:8 }}>✦ Generate cards with AI</div>
+        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={3}
+          placeholder="Describe what you want — e.g. 'the standard terms the Gemara uses to introduce a question and its resolution', or 'money/damages vocabulary in Bava Kamma'."
+          style={{ ...inputStyle, marginBottom:10, resize:"vertical" }} />
+        <Btn onClick={generate} disabled={genLoading || !prompt.trim()} bg={C.gold} style={{ width:"100%" }}>{genLoading ? "Generating…" : "Generate cards"}</Btn>
+      </div>
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+        <span style={{ fontSize:13, fontWeight:600, color:C.label }}>Cards ({cards.filter(c => c.he.trim() && c.en.trim()).length})</span>
+        <button onClick={() => setCards(cs => [...cs, { he:"", en:"" }])} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"4px 10px", cursor:"pointer", fontFamily:"inherit", fontSize:13, color:C.brown }}>＋ Add card</button>
+      </div>
+      {cards.map((c, i) => (
+        <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 1fr 28px", gap:8, marginBottom:8, alignItems:"center" }}>
+          <input dir="rtl" value={c.he} onChange={e => setCards(cs => cs.map((x, idx) => idx === i ? { ...x, he: e.target.value } : x))} placeholder="עברית" style={{ ...inputStyle, fontFamily:"'Heebo',sans-serif" }} />
+          <input value={c.en} onChange={e => setCards(cs => cs.map((x, idx) => idx === i ? { ...x, en: e.target.value } : x))} placeholder="English" style={inputStyle} />
+          <button onClick={() => setCards(cs => cs.filter((_, idx) => idx !== i))} style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, fontSize:18, lineHeight:1 }}>×</button>
+        </div>
+      ))}
+
+      {err && <p style={{ color:C.red, fontSize:13, marginTop:10 }}>{err}</p>}
+      <Btn onClick={save} disabled={saving} bg={C.green} style={{ width:"100%", marginTop:16 }}>{saving ? "Saving…" : (deck ? "Save changes" : "Publish deck")}</Btn>
+    </div>
+  );
+}
+
+// ── DECK HUB (My Decks · Catalog · Study · Create) ────────────────────────────
+function TalmudDeckHub({ student, deckProgress, onDeckUpdate, myDecks, onMyDecksChange, isAdmin }) {
+  const [decks, setDecks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState("mine");     // mine | catalog | study | edit
+  const [activeId, setActiveId] = useState(null);
+  const [editDeck, setEditDeck] = useState(null);
+  const today = new Date().toLocaleDateString('en-CA');
+
+  async function refresh() {
+    setLoading(true);
+    try { setDecks(await loadPublishedDecks()); } catch (e) {}
+    setLoading(false);
+  }
+  useEffect(() => { refresh(); }, []);
+
+  const allDecks = [BUILTIN_TALMUD_DECK, ...decks.filter(d => d.id !== BUILTIN_DECK_ID)];
+  const findDeck = id => allDecks.find(d => d.id === id);
+  const mine = myDecks.map(findDeck).filter(Boolean);
+
+  function stats(deck) {
+    const prog = deckProgress[deck.id] || {};
+    const cards = deck.cards || [];
+    const due = cards.filter(c => { const s = prog[c.he]; return !s || s.dueDate <= today; }).length;
+    const mastered = cards.filter(c => (prog[c.he]?.interval || 0) >= 21).length;
+    return { due, mastered, total: cards.length };
+  }
+
+  const addDeck = id => { if (!myDecks.includes(id)) onMyDecksChange([...myDecks, id]); };
+  const removeDeck = id => onMyDecksChange(myDecks.filter(d => d !== id));
+
+  async function handleDelete(deck) {
+    if (!window.confirm(`Delete "${deck.title}" for everyone? This cannot be undone.`)) return;
+    try { await deleteDeckDoc(deck.id); } catch (e) {}
+    removeDeck(deck.id);
+    refresh();
+  }
+
+  const backBtn = (label, to) => <button onClick={() => setView(to)} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:14, color:C.muted, padding:0, marginBottom:14 }}>{label}</button>;
+
+  // ── STUDY ──
+  if (view === "study") {
+    const deck = findDeck(activeId);
+    if (!deck) { setView("mine"); return null; }
+    return (
+      <div>
+        {backBtn("‹ My Decks", "mine")}
+        <div style={{ marginBottom:16 }}>
+          <h2 style={{ fontSize:20, fontWeight:700, color:C.label }}>{deck.title}</h2>
+          {deck.description && <p style={{ fontSize:13, color:C.muted, marginTop:2 }}>{deck.description}</p>}
+        </div>
+        <TalmudAnki deck={deck} deckId={deck.id} anki={deckProgress[deck.id] || {}} onUpdate={(he, st) => onDeckUpdate(deck.id, he, st)} />
+      </div>
+    );
+  }
+
+  // ── EDIT / CREATE ──
+  if (view === "edit") {
+    return <DeckEditor deck={editDeck} student={student} onCancel={() => setView(editDeck ? "catalog" : "mine")} onSaved={async (saved) => { await refresh(); addDeck(saved.id); setActiveId(saved.id); setView("study"); }} />;
+  }
+
+  const deckCard = (deck, opts = {}) => {
+    const s = stats(deck);
+    const owned = deck.ownerEmail && deck.ownerEmail === student.email;
+    return (
+      <div key={deck.id} style={{ background:"#fff", borderRadius:16, padding:"16px 18px", marginBottom:12, boxShadow:"0 1px 4px rgba(0,0,0,.05)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12 }}>
+          <div onClick={opts.onOpen} style={{ flex:1, cursor: opts.onOpen ? "pointer" : "default" }}>
+            <div style={{ fontSize:16, fontWeight:600, color:C.label }}>{deck.title}</div>
+            {deck.description && <div style={{ fontSize:13, color:C.muted, marginTop:2, lineHeight:1.4 }}>{deck.description}</div>}
+            <div style={{ fontSize:12, color:C.muted, marginTop:8 }}>
+              {deck.builtin ? "Kitz · core deck" : `by ${deck.ownerName || "a user"}`} · {s.total} cards
+              {opts.showProgress && ` · ${s.due} due · ${s.mastered} mastered`}
+            </div>
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:6, alignItems:"flex-end" }}>
+            {opts.actions}
+          </div>
+        </div>
+        {(owned || (isAdmin && !deck.builtin)) && (
+          <div style={{ display:"flex", gap:14, marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}` }}>
+            {owned && <button onClick={() => { setEditDeck(deck); setView("edit"); }} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, color:C.brown, padding:0 }}>Edit</button>}
+            {isAdmin && !deck.builtin && <button onClick={() => handleDelete(deck)} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, color:C.red, padding:0 }}>Delete{isAdmin && !owned ? " (admin)" : ""}</button>}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const smallBtn = (label, onClick, primary) => <button onClick={onClick} style={{ background: primary ? C.brown : "none", color: primary ? "#fff" : C.brown, border: primary ? "none" : `1px solid ${C.border}`, borderRadius:980, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>{label}</button>;
+
+  // ── CATALOG ──
+  if (view === "catalog") {
+    return (
+      <div>
+        {backBtn("‹ My Decks", "mine")}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+          <h2 style={{ fontSize:20, fontWeight:700, color:C.label }}>Deck Catalog</h2>
+          {smallBtn("＋ New Deck", () => { setEditDeck(null); setView("edit"); }, true)}
+        </div>
+        {loading ? <p style={{ color:C.muted, fontSize:14, textAlign:"center", padding:"30px 0" }}>Loading decks…</p>
+          : allDecks.map(deck => deckCard(deck, {
+              actions: myDecks.includes(deck.id)
+                ? <span style={{ fontSize:12, color:C.green, fontWeight:600 }}>✓ Added</span>
+                : smallBtn("Add", () => addDeck(deck.id)),
+            }))}
+      </div>
+    );
+  }
+
+  // ── MY DECKS (default) ──
+  return (
+    <div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+        <h2 style={{ fontSize:20, fontWeight:700, color:C.label }}>My Decks</h2>
+        <div style={{ display:"flex", gap:8 }}>
+          {smallBtn("Browse", () => setView("catalog"))}
+          {smallBtn("＋ New", () => { setEditDeck(null); setView("edit"); }, true)}
+        </div>
+      </div>
+      {mine.length === 0 ? (
+        <div style={{ textAlign:"center", padding:"40px 20px", color:C.muted }}>
+          <div style={{ fontSize:15, marginBottom:16 }}>No decks yet. Add one from the catalog or create your own.</div>
+          {smallBtn("Browse catalog", () => setView("catalog"), true)}
+        </div>
+      ) : mine.map(deck => deckCard(deck, {
+        showProgress: true,
+        onOpen: () => { setActiveId(deck.id); setView("study"); },
+        actions: (
+          <>
+            {smallBtn("Study", () => { setActiveId(deck.id); setView("study"); }, true)}
+            {!deck.builtin && <button onClick={() => removeDeck(deck.id)} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.muted }}>Remove</button>}
+          </>
+        ),
+      }))}
+    </div>
+  );
+}
+
+function TalmudHome({ student, onBack, onLogout, talmudProgress, onMastered, onVocabSave, onWordMastered, onVocabDone, onVocabReset, onKriahDone, talmudVocab, deckProgress, onDeckUpdate, myDecks, onMyDecksChange, isAdmin, defaultMasechet, defaultDaf, defaultFromSeg, defaultToSeg, fromAssignment, lastVisitedTalmud, onSetLastVisitedTalmud, onClearDaf, onDafOpened, seenTutorial, onTutorialSeen, seenStudyTutorial, onStudyTutorialSeen, seenDafTutorial, onDafTutorialSeen }) {
   const filteredMasechtos = TALMUD_TOC;
+  const [showTutorial, setShowTutorial] = useState(!seenTutorial);
+  function dismissTutorial() { setShowTutorial(false); onTutorialSeen?.(); }
+  const [showDafTutorial, setShowDafTutorial] = useState(false);
+  function dismissDafTutorial() { setShowDafTutorial(false); onDafTutorialSeen?.(); }
 const [activeMasechet, setActiveMasechet] = useState(null);
 const [activeDaf, setActiveDaf] = useState(null);
 const [selectedMasechet, setSelectedMasechet] = useState(
@@ -3341,6 +3918,22 @@ const [masechetSearch, setMasechetSearch] = useState("");
   return saved ? JSON.parse(saved) : {};
 });
   const [perekData, setPerekData] = useState({});
+  const dafTimerRef = useRef(null);
+
+  // After 20s on a daf with no existing progress, mark it as active
+  useEffect(() => {
+    clearTimeout(dafTimerRef.current);
+    if (activeDaf && activeMasechet) {
+      const countKey = `${activeMasechet}_${activeDaf}`;
+      const hasProgress = Object.keys(talmudProgress).some(k => k.startsWith(`${countKey}_`));
+      if (!hasProgress) {
+        dafTimerRef.current = setTimeout(() => {
+          onDafOpened?.(activeMasechet, activeDaf);
+        }, 20000);
+      }
+    }
+    return () => clearTimeout(dafTimerRef.current);
+  }, [activeDaf, activeMasechet]);
 
   useEffect(() => { window.scrollTo(0, 0); }, [selectedMasechet, activeDaf, activeSegIdx]);
 
@@ -3389,6 +3982,7 @@ const [masechetSearch, setMasechetSearch] = useState("");
     setActiveDaf(daf);
     setActiveSegIdx(null);
     setDafTab("segments");
+    if (!seenDafTutorial) setShowDafTutorial(true);
     const result = await loadDafText(masechet, daf);
     setSegments(result);
     setLoadingDaf(false);
@@ -3416,6 +4010,9 @@ setDafSegCounts(c => {
   onMastered={() => onMastered(key)}
   onBack={() => setActiveSegIdx(null)}
   backLabel={null}
+  onGoToSubjects={onBack}
+  onGoToMasechet={fromAssignment ? null : () => { setActiveDaf(null); setSegments([]); }}
+  fromAssignment={fromAssignment}
   onVocabSave={(he, en) => onVocabSave(key, he, en)}
   onWordMastered={(he) => onWordMastered(key, he)}
   segVocab={talmudVocab[key] || {}}
@@ -3442,6 +4039,8 @@ onVocabDone={() => onVocabDone(key)}
     return idx >= 0 && idx < dafimList.length - 1;
   })()}
   student={student}
+  seenTutorial={seenStudyTutorial}
+  onTutorialSeen={onStudyTutorialSeen}
 />
     );
   }
@@ -3453,8 +4052,19 @@ onVocabDone={() => onVocabDone(key)}
     return (
       <div style={{ minHeight:"100vh", background:C.bg }}>
         <style>{CSS}</style>
+        {showDafTutorial && <TutorialOverlay steps={TALMUD_DAF_TUTORIAL} onDone={dismissDafTutorial} />}
         <div style={{ maxWidth:720, margin:"0 auto", padding:"calc(28px + env(safe-area-inset-top, 0px)) calc(20px + env(safe-area-inset-right, 0px)) 80px calc(20px + env(safe-area-inset-left, 0px))" }}>
-          <button onClick={() => { if (fromAssignment) { onBack(); } else { setActiveDaf(null); setSegments([]); } }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:C.brown, fontFamily:"inherit", marginBottom:16, fontWeight:500 }}>{fromAssignment ? "← Assignment" : "‹ Back"}</button>
+          {fromAssignment ? (
+            <button onClick={onBack} style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:C.brown, fontFamily:"inherit", marginBottom:16, fontWeight:500 }}>← Assignment</button>
+          ) : (
+            <div style={{ display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:16,background:"rgba(184,134,11,.08)",borderRadius:10,padding:"8px 14px" }}>
+              <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>Subjects</button>
+              <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>
+              <button onClick={() => { setActiveDaf(null); setSegments([]); }} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>{activeMasechet}</button>
+              <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>
+              <span style={{ fontFamily:"inherit",fontSize:15,color:C.label,fontWeight:700 }}>{activeDaf}</span>
+            </div>
+          )}
           <div style={{ background:"white", borderRadius:14, padding:"16px 18px", boxShadow:"0 1px 4px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04)", marginBottom:16 }}>
             <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:22, fontWeight:700, marginBottom:4, color:C.label }}>{activeMasechet} · {activeDaf}</div>
             <div style={{ fontSize:13, color:C.muted }}>{masteredCount}/{totalDisplayed} segments mastered{defaultFromSeg || defaultToSeg ? ` (assigned range)` : ""}</div>
@@ -3462,7 +4072,7 @@ onVocabDone={() => onVocabDone(key)}
 
           <div className="seg-wrap" style={{ marginBottom:18 }}>
             {[["segments","Segments"],["shakla","Shakla v'Tarya"]].map(([id, lbl]) => (
-              <button key={id} className={`tab${dafTab===id?" on":""}`} onClick={() => setDafTab(id)}>{lbl}</button>
+              <button key={id} data-tour={`talmud-daf-${id}-tab`} className={`tab${dafTab===id?" on":""}`} onClick={() => setDafTab(id)}>{lbl}</button>
             ))}
           </div>
 
@@ -3503,6 +4113,7 @@ onMouseEnter={e => e.currentTarget.style.background="#FAF7F4"}
   return (
     <div style={{ minHeight:"100vh", background:C.bg }}>
       <style>{CSS}</style>
+      {showTutorial && <TutorialOverlay steps={TALMUD_TUTORIAL} onDone={dismissTutorial} />}
       <div style={{ maxWidth:720, margin:"0 auto", padding:"28px 20px 80px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:22 }}>
           <div>
@@ -3513,6 +4124,7 @@ onMouseEnter={e => e.currentTarget.style.background="#FAF7F4"}
             <div style={{ fontWeight:600, fontSize:15 }}>{student.name}</div>
             <div style={{ fontSize:12, color:C.muted }}>{student.email}</div>
             <div style={{ display:"flex", gap:6, justifyContent:"flex-end", marginTop:6 }}>
+              <button onClick={() => setShowTutorial(true)} title="How it works" style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:980, width:28, height:28, cursor:"pointer", fontFamily:"inherit", fontSize:13, color:C.muted, display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>?</button>
               <button onClick={onBack} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:7, padding:"3px 10px", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.muted }}>← Subjects</button>
               <button onClick={onLogout} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:7, padding:"3px 10px", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.muted }}>Switch</button>
             </div>
@@ -3521,12 +4133,12 @@ onMouseEnter={e => e.currentTarget.style.background="#FAF7F4"}
 
         <div className="seg-wrap" style={{ marginBottom:20 }}>
           {[["learn","Learn"],["anki","TalmudKI"]].map(([id, lbl]) => (
-            <button key={id} className={`tab${homeTab===id?" on":""}`} onClick={() => setHomeTab(id)}>{lbl}</button>
+            <button key={id} data-tour={id === "anki" ? "talmud-ki-tab" : undefined} className={`tab${homeTab===id?" on":""}`} onClick={() => setHomeTab(id)}>{lbl}</button>
           ))}
         </div>
 
         {homeTab === "anki" && (
-          <TalmudAnki anki={talmudAnki} onUpdate={(he, state) => onAnkiUpdate(he, state)} />
+          <TalmudDeckHub student={student} deckProgress={deckProgress} onDeckUpdate={onDeckUpdate} myDecks={myDecks} onMyDecksChange={onMyDecksChange} isAdmin={isAdmin} />
         )}
 
         {homeTab === "learn" && loadingDaf && (
@@ -3560,7 +4172,7 @@ onMouseEnter={e => e.currentTarget.style.background="#FAF7F4"}
       activeDafs.sort((a, b) => a.masechet.localeCompare(b.masechet) || a.daf.localeCompare(b.daf, undefined, { numeric: true }));
       if (!activeDafs.length) return null;
       return (
-        <div style={{ marginBottom:16 }}>
+        <div data-tour="talmud-active-dafim" style={{ marginBottom:16 }}>
           <div style={{ fontSize:11, color:"#6B4E1A", fontWeight:600, letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:8, paddingLeft:2 }}>Active Dafim</div>
           {activeDafs.map(({ masechet, he, daf }) => (
             <div key={`${masechet}_${daf}`}
@@ -3572,7 +4184,16 @@ onMouseEnter={e => e.currentTarget.style.background="#FAF7F4"}
                 <div dir="rtl" style={{ fontFamily:"'Heebo',sans-serif", fontSize:16, fontWeight:700, color:C.label }}>{he}</div>
                 <div style={{ fontSize:13, color:"#6B4E1A", fontWeight:500 }}>{masechet} · {daf}</div>
               </div>
-              <span style={{ color:C.muted, fontSize:18 }}>›</span>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ color:C.muted, fontSize:18 }}>›</span>
+                {onClearDaf && (
+                  <button
+                    onClick={e => { e.stopPropagation(); onClearDaf(masechet, daf); }}
+                    title="Remove from active list"
+                    style={{ background:"rgba(0,0,0,.07)", border:"none", borderRadius:6, width:22, height:22, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:C.muted, fontSize:14, lineHeight:1, padding:0, flexShrink:0 }}
+                  >×</button>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -3589,13 +4210,13 @@ onMouseEnter={e => e.currentTarget.style.background="#FAF7F4"}
         />
       </div>
     </div>
-    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(140px, 1fr))", gap:12 }}>  
-      {filteredMasechtos.filter(m => masechetSearch === "" || m.masechet.toLowerCase().includes(masechetSearch.toLowerCase()) || m.he.includes(masechetSearch)).map(m => {
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(140px, 1fr))", gap:12 }}>
+      {filteredMasechtos.filter(m => masechetSearch === "" || m.masechet.toLowerCase().includes(masechetSearch.toLowerCase()) || m.he.includes(masechetSearch)).map((m, mi) => {
       const masteredCount = Object.entries(talmudProgress)
         .filter(([k]) => k.startsWith(`${m.masechet}_`))
         .filter(([,v]) => v?.kriah && v?.quiz).length;
       return (
-        <div key={m.masechet} onClick={() => { setSelectedMasechet(m); setMasechetSearch(""); }}
+        <div key={m.masechet} data-tour={mi === 0 ? "talmud-first-masechet" : undefined} onClick={() => { setSelectedMasechet(m); setMasechetSearch(""); }}
           onMouseEnter={e => e.currentTarget.style.boxShadow="0 3px 12px rgba(0,0,0,.13)"}
           onMouseLeave={e => e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,.07)"}
 style={{ background:"white", borderRadius:14, padding:"18px 12px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04)", textAlign:"center", borderTop:`3px solid ${masteredCount > 0 ? "rgba(52,199,89,.5)" : "transparent"}` }}>
@@ -3609,7 +4230,13 @@ style={{ background:"white", borderRadius:14, padding:"18px 12px", cursor:"point
 
 {homeTab === "learn" && !loadingDaf && selectedMasechet && (
   <div>
-    <button onClick={() => setSelectedMasechet(null)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:C.muted, fontFamily:"inherit", marginBottom:16, padding:0 }}>← All Masachtot</button>
+    <div style={{ display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:16,background:"rgba(184,134,11,.08)",borderRadius:10,padding:"8px 14px" }}>
+      <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>Subjects</button>
+      <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>
+      <button onClick={() => setSelectedMasechet(null)} style={{ background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:15,color:C.brown,padding:0,fontWeight:600 }}>All Masachtot</button>
+      <span style={{ color:C.brown,fontSize:15,fontWeight:400 }}>›</span>
+      <span style={{ fontFamily:"inherit",fontSize:15,color:C.label,fontWeight:700 }}>{selectedMasechet.masechet}</span>
+    </div>
 <div style={{ background:"white", borderRadius:12, padding:"14px 18px", boxShadow:"0 1px 3px rgba(0,0,0,.06)", marginBottom:12 }}>
   <div style={{ fontFamily:"'Heebo',sans-serif", fontSize:22, fontWeight:700 }}>{selectedMasechet.he} · {selectedMasechet.masechet}</div>
 </div>
@@ -3648,7 +4275,7 @@ style={{ background:"white", borderRadius:14, padding:"18px 12px", cursor:"point
                       const stops = Array.from({ length: total }, (_, i) => {
                         const key = `${selectedMasechet.masechet}_${daf}_${i}`;
                         const status = talmudProgress[key];
-                        const color = status?.kriah && status?.quiz ? "#34C759" : status ? "#B8860B" : "rgba(0,0,0,.06)";
+                        const color = status?.kriah && status?.quiz ? "#34C759" : (status?.kriah || status?.quiz || status?.vocab) ? "#B8860B" : "rgba(0,0,0,.06)";
                         return `${color} ${i * deg}deg ${(i+1) * deg}deg`;
                       });
                       return `conic-gradient(from -90deg, ${stops.join(", ")})`;
@@ -3929,6 +4556,37 @@ const TALMUD_VOCAB = [
   { he: "הא קא משמע לן", en: "this is what it teaches us", difficulty: 3, difficultyLabel: "Advanced", core: true },
 ];
 
+// ── TALMUD KEY: MULTI-DECK SYSTEM ─────────────────────────────────────────────
+// Admins who can delete any published deck (moderation). Edit to add more.
+const ADMIN_EMAILS = ["jhein1@mail.yu.edu"];
+const BUILTIN_DECK_ID = "talmud-core-250";
+const BUILTIN_TALMUD_DECK = {
+  id: BUILTIN_DECK_ID,
+  title: "250 Most Common Talmud Words",
+  description: "The core Aramaic/Hebrew vocabulary for reading Gemara.",
+  ownerName: "Kitz",
+  builtin: true,
+  cards: TALMUD_VOCAB,
+  cardCount: TALMUD_VOCAB.length,
+};
+
+function newDeckId() {
+  return "deck_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+}
+
+async function loadPublishedDecks() {
+  const snap = await getDocs(collection(db, "decks"));
+  return snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(d => d.published);
+}
+
+async function saveDeck(deck) {
+  await setDoc(doc(db, "decks", deck.id), deck, { merge: true });
+}
+
+async function deleteDeckDoc(id) {
+  await deleteDoc(doc(db, "decks", id));
+}
+
 
 // ── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -3939,12 +4597,13 @@ const [studentClasses, setStudentClasses] = useState([]);
 const [selectedClass, setSelectedClass] = useState(null);
 const [subjectOrigin, setSubjectOrigin] = useState(null); // "classroom" | null
 const [ksaStartOpen, setKsaStartOpen] = useState(false);
+const [ksaAssignmentFromSeif, setKsaAssignmentFromSeif] = useState(null); // 0-based
+const [ksaAssignmentToSeif, setKsaAssignmentToSeif] = useState(null);   // 0-based
 const [classroomSelectedAssignment, setClassroomSelectedAssignment] = useState(null);
 const [talmudDefaultMasechet, setTalmudDefaultMasechet] = useState(null);
 const [talmudDefaultDaf, setTalmudDefaultDaf] = useState(null);
 const [talmudDefaultFromSeg, setTalmudDefaultFromSeg] = useState(null);
 const [talmudDefaultToSeg, setTalmudDefaultToSeg] = useState(null);
-const [progressionLocked, setProgressionLocked] = useState(true);
 const savedNav = JSON.parse(localStorage.getItem("ksa_nav") || "null");
 const [view, setView]                 = useState("home");
 const [activeSeif, setActiveSeif]     = useState(0);
@@ -3953,13 +4612,20 @@ const [allProgress, setAllProgress]   = useState({});
 const [allVocab, setAllVocab]         = useState({});
 const [allChecked, setAllChecked]     = useState({});
 const [allScores, setAllScores]       = useState({});
+const [seenTutorials, setSeenTutorials] = useState({});
 const [subject, setSubject] = useState(null);
 const [returnToSiman, setReturnToSiman] = useState(false);
 const [lastVisited, setLastVisited] = useState(null);
 const [lastVisitedTalmud, setLastVisitedTalmud] = useState(null);
+const [lastVisitedChumash, setLastVisitedChumash] = useState(null);
+const [chumashAssignmentRange, setChumashAssignmentRange] = useState(null);
 const [talmudProgress, setTalmudProgress] = useState({});
+const [chumashProgress, setChumashProgress] = useState({});
+const [chumashQuizProgress, setChumashQuizProgress] = useState({});
+const [chumashVocab, setChumashVocab] = useState({});
 const [talmudVocab, setTalmudVocab] = useState({});
-const [talmudAnki, setTalmudAnki] = useState({});
+const [deckProgress, setDeckProgress] = useState({});
+const [myDecks, setMyDecks] = useState([BUILTIN_DECK_ID]);
 const [tocLoaded, setTocLoaded]       = useState(false);
 const [toc, setToc]                   = useState([]);
 const [seifCounts, setSeifCounts] = useState(() => {
@@ -3983,6 +4649,48 @@ const flatVocab = Object.values(allVocab[activeSiman] || {}).reduce((acc, seifWo
 }, {});
 
 useEffect(() => { if (returnToSiman) setReturnToSiman(false); }, [returnToSiman]);
+
+// ── ACTIVITY TRACKER ─────────────────────────────────────────────────────────
+const activitySubjectRef = useRef(subject);
+useEffect(() => { activitySubjectRef.current = subject; }, [subject]);
+const activityAccumRef = useRef(0);
+
+useEffect(() => {
+  if (!student?.email) return;
+  const IDLE_TIMEOUT = 60_000; // 60s no interaction = idle
+  let lastActivity = Date.now();
+  const onActivity = () => { lastActivity = Date.now(); };
+  const events = ['click', 'keydown', 'touchstart', 'scroll'];
+  events.forEach(e => document.addEventListener(e, onActivity, { passive: true }));
+
+  async function flush() {
+    const secs = activityAccumRef.current;
+    if (secs <= 0) return;
+    activityAccumRef.current = 0;
+    const today = new Date().toISOString().slice(0, 10);
+    const subj = activitySubjectRef.current;
+    const upd = { [`dailyActivity.${today}.total`]: increment(secs) };
+    if (subj && ['ksa', 'talmud', 'chumash'].includes(subj)) {
+      upd[`dailyActivity.${today}.${subj}`] = increment(secs);
+    }
+    try { await setDoc(doc(db, "students", student.email), upd, { merge: true }); } catch {}
+  }
+
+  const interval = setInterval(() => {
+    const active = document.visibilityState === 'visible' && Date.now() - lastActivity <= IDLE_TIMEOUT;
+    if (active) activityAccumRef.current += 5;
+    if (activityAccumRef.current >= 30) flush();
+  }, 5_000);
+
+  const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+  document.addEventListener('visibilitychange', onVisibility);
+
+  return () => {
+    events.forEach(e => document.removeEventListener(e, onActivity));
+    clearInterval(interval);
+    document.removeEventListener('visibilitychange', onVisibility);
+  };
+}, [student?.email]);
 
 useEffect(() => {
   loadTOC().then(t => setToc(t));
@@ -4012,11 +4720,17 @@ useEffect(() => {
           setAllVocab(data.allVocab || {});
           setAllChecked(data.allChecked || {});
           setAllScores(data.allScores || {});
-          setTalmudAnki(data.talmudAnki || {});
+          setDeckProgress(data.deckProgress || (data.talmudAnki ? { [BUILTIN_DECK_ID]: data.talmudAnki } : {}));
+          setMyDecks(data.myDecks && data.myDecks.length ? data.myDecks : [BUILTIN_DECK_ID]);
           setTalmudProgress(data.talmudProgress || {});
           setTalmudVocab(data.talmudVocab || {});
           if (data.lastVisited) setLastVisited(data.lastVisited);
           if (data.lastVisitedTalmud) setLastVisitedTalmud(data.lastVisitedTalmud);
+          if (data.lastVisitedChumash) setLastVisitedChumash(data.lastVisitedChumash);
+          if (data.chumashProgress) setChumashProgress(data.chumashProgress);
+          if (data.chumashQuizProgress) setChumashQuizProgress(data.chumashQuizProgress);
+          if (data.chumashVocab) setChumashVocab(data.chumashVocab);
+          if (data.seenTutorials) setSeenTutorials(data.seenTutorials);
           if (data.classCodes?.length) {
             const all = (await Promise.all(data.classCodes.map(loadClass))).filter(Boolean);
             setStudentClasses(all);
@@ -4036,17 +4750,27 @@ async function load(profile) {
     setAllVocab(data.allVocab || {});
     setAllChecked(data.allChecked || {});
     setAllScores(data.allScores || {});
-    setTalmudAnki(data.talmudAnki || {});
+    setDeckProgress(data.deckProgress || (data.talmudAnki ? { [BUILTIN_DECK_ID]: data.talmudAnki } : {}));
+    setMyDecks(data.myDecks && data.myDecks.length ? data.myDecks : [BUILTIN_DECK_ID]);
     setTalmudProgress(data.talmudProgress || {});
     setTalmudVocab(data.talmudVocab || {});
     if (data.lastVisited) setLastVisited(data.lastVisited);
     if (data.lastVisitedTalmud) setLastVisitedTalmud(data.lastVisitedTalmud);
+    if (data.lastVisitedChumash) setLastVisitedChumash(data.lastVisitedChumash);
+    if (data.chumashProgress) setChumashProgress(data.chumashProgress);
+    if (data.chumashQuizProgress) setChumashQuizProgress(data.chumashQuizProgress);
+    if (data.chumashVocab) setChumashVocab(data.chumashVocab);
     if (data.classCodes?.length) {
       const all = (await Promise.all(data.classCodes.map(loadClass))).filter(Boolean);
       setStudentClasses(all);
     }
   }
 }
+
+  function markTutorialSeen(key) {
+    setSeenTutorials(s => ({ ...s, [key]: true }));
+    updateDoc(doc(db, "students", student.email), { [`seenTutorials.${key}`]: true });
+  }
 
   const saveTimeout = useCallback((() => {
     let timer = null;
@@ -4058,8 +4782,8 @@ async function load(profile) {
 
 useEffect(() => {
   if (!student) return;
-saveTimeout(student.email, { name: student.name, email: student.email, allProgress, allVocab, allChecked, allScores, talmudAnki, talmudProgress, talmudVocab, lastVisited, lastVisitedTalmud });
-}, [student, allProgress, allVocab, allChecked, allScores, talmudAnki, talmudProgress, talmudVocab, lastVisited, lastVisitedTalmud, saveTimeout]);
+saveTimeout(student.email, { name: student.name, email: student.email, allProgress, allVocab, allChecked, allScores, talmudAnki: deckProgress[BUILTIN_DECK_ID] || {}, deckProgress, myDecks, talmudProgress, talmudVocab, lastVisited, lastVisitedTalmud, lastVisitedChumash, chumashProgress, chumashQuizProgress, chumashVocab });
+}, [student, allProgress, allVocab, allChecked, allScores, deckProgress, myDecks, talmudProgress, talmudVocab, lastVisited, lastVisitedTalmud, lastVisitedChumash, chumashProgress, chumashQuizProgress, chumashVocab, saveTimeout]);
 function logout() {
   signOut(auth);
   setStudent(null);
@@ -4071,6 +4795,8 @@ function logout() {
   setTalmudDefaultMasechet(null);
   setAllProgress({}); setAllVocab({});
   setAllChecked({}); setAllScores({});
+  setChumashProgress({}); setChumashQuizProgress({}); setChumashVocab({});
+  setLastVisitedChumash(null);
   setActiveSiman(null); setView("home");
 }
 
@@ -4136,6 +4862,13 @@ function handleNextSeif() {
     setView("home");
   }
 }
+function handlePrevSeif() {
+  const prev = activeSeif - 1;
+  if (prev >= 0) {
+    setActiveSeif(prev);
+    setAllProgress(p => ({ ...p, [activeSiman]: { ...p[activeSiman], [prev]: p[activeSiman]?.[prev] || "reading" }}));
+  }
+}
 
 if (!tocLoaded) return (
   <div style={{ minHeight:"100vh", background:C.bg, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:16 }}>
@@ -4174,7 +4907,10 @@ function handleSubjectBack() {
   const orig = subjectOrigin;
   setSubjectOrigin(null);
   setKsaStartOpen(false);
+  setKsaAssignmentFromSeif(null);
+  setKsaAssignmentToSeif(null);
   setTalmudDefaultMasechet(null);
+  setChumashAssignmentRange(null);
   setSubject(orig || null);
 }
 
@@ -4186,27 +4922,41 @@ if (subject === "classroom") return (
     student={student}
     allProgress={allProgress}
     talmudProgress={talmudProgress}
+    chumashProgress={chumashProgress}
     seifCounts={seifCounts}
     selectedAssignment={classroomSelectedAssignment}
     onSelectAssignment={setClassroomSelectedAssignment}
     onBack={() => setSubject(null)}
-    onStudyKSA={async simanNum => {
+    onStudyKSA={async (simanNum, seifIdx, fromSeifIdx, toSeifIdx) => {
       setSubjectOrigin("classroom");
+      setKsaAssignmentFromSeif(fromSeifIdx ?? null);
+      setKsaAssignmentToSeif(toSeifIdx ?? null);
       if (simanNum) {
         await openSiman(simanNum);
-        setKsaStartOpen(true);
+        if (seifIdx !== undefined) {
+          openSeif(seifIdx, simanNum);
+        } else {
+          setKsaStartOpen(true);
+        }
       }
       setSubject("ksa");
     }}
-    onStudyTalmud={(masechet, daf, fromSeg, toSeg, locked) => {
+    onStudyTalmud={(masechet, daf, fromSeg, toSeg) => {
       setSubjectOrigin("classroom");
       if (masechet) setTalmudDefaultMasechet(masechet);
       if (daf) setTalmudDefaultDaf(daf); else setTalmudDefaultDaf(null);
       setTalmudDefaultFromSeg(fromSeg || null);
       setTalmudDefaultToSeg(toSeg || null);
-      setProgressionLocked(locked !== false);
       setSubject("talmud");
     }}
+    onStudyChumash={(seferName, perek, fromPasuk, toPasuk) => {
+      setSubjectOrigin("classroom");
+      setLastVisitedChumash({ sefer: seferName, perek, pasuk: fromPasuk || 1 });
+      setChumashAssignmentRange({ seferName, perek, fromPasuk: fromPasuk || 1, toPasuk: toPasuk || null });
+      setSubject("chumash");
+    }}
+    seenTutorial={!!seenTutorials.classroom2}
+    onTutorialSeen={() => markTutorialSeen("classroom2")}
   />
 );
 
@@ -4223,16 +4973,78 @@ if (subject === "talmud") return (
     onVocabReset={(key) => { setTalmudVocab(v => ({ ...v, [key]: {} })); setTalmudProgress(p => ({ ...p, [key]: { ...(p[key]||{}), vocab: false } })); }}
     onKriahDone={(key) => setTalmudProgress(p => ({ ...p, [key]: { ...(p[key]||{}), kriah: true } }))}
     onMastered={(key) => setTalmudProgress(p => ({ ...p, [key]: { ...(p[key]||{}), quiz: true } }))}
-    talmudAnki={talmudAnki}
-    onAnkiUpdate={(he, state) => setTalmudAnki(a => ({ ...a, [he]: state }))}
+    deckProgress={deckProgress}
+    onDeckUpdate={(deckId, he, state) => setDeckProgress(dp => ({ ...dp, [deckId]: { ...(dp[deckId]||{}), [he]: state } }))}
+    myDecks={myDecks}
+    onMyDecksChange={setMyDecks}
+    isAdmin={ADMIN_EMAILS.includes(student.email)}
     defaultMasechet={talmudDefaultMasechet}
     defaultDaf={talmudDefaultDaf}
     defaultFromSeg={talmudDefaultFromSeg}
     defaultToSeg={talmudDefaultToSeg}
     fromAssignment={subjectOrigin === "classroom"}
-    progressionLocked={progressionLocked}
     lastVisitedTalmud={lastVisitedTalmud}
     onSetLastVisitedTalmud={setLastVisitedTalmud}
+    onDafOpened={(masechet, daf) => setTalmudProgress(p => ({ ...p, [`${masechet}_${daf}_0`]: { ...(p[`${masechet}_${daf}_0`]||{}), opened: true } }))}
+    onClearDaf={(masechet, daf) => {
+      const prefix = `${masechet}_${daf}_`;
+      const progressKeys = Object.keys(talmudProgress).filter(k => k.startsWith(prefix));
+      const vocabKeys = Object.keys(talmudVocab).filter(k => k.startsWith(prefix));
+      const newProgress = {...talmudProgress};
+      progressKeys.forEach(k => delete newProgress[k]);
+      const newVocab = {...talmudVocab};
+      vocabKeys.forEach(k => delete newVocab[k]);
+      setTalmudProgress(newProgress);
+      setTalmudVocab(newVocab);
+      const updates = {};
+      progressKeys.forEach(k => { updates[`talmudProgress.${k}`] = deleteField(); });
+      vocabKeys.forEach(k => { updates[`talmudVocab.${k}`] = deleteField(); });
+      if (Object.keys(updates).length > 0) {
+        updateDoc(doc(db, "students", student.email), updates);
+      }
+    }}
+    seenTutorial={!!seenTutorials.talmud2}
+    onTutorialSeen={() => markTutorialSeen("talmud2")}
+    seenStudyTutorial={!!seenTutorials.talmudStudy}
+    onStudyTutorialSeen={() => markTutorialSeen("talmudStudy")}
+    seenDafTutorial={!!seenTutorials.talmudDaf}
+    onDafTutorialSeen={() => markTutorialSeen("talmudDaf")}
+  />
+);
+if (subject === "chumash") return (
+  <ChumashHome
+    student={student}
+    chumashProgress={chumashProgress}
+    chumashQuizProgress={chumashQuizProgress}
+    chumashVocab={chumashVocab}
+    onProgressUpdate={(key, data) => setChumashProgress(p => ({ ...p, [key]: { ...(p[key]||{}), ...data } }))}
+    onQuizPass={(key) => setChumashQuizProgress(p => ({ ...p, [key]: { passed: true } }))}
+    onVocabSave={(key, he, en) => setChumashVocab(v => ({ ...v, [key]: { ...(v[key]||{}), [he]: { he, en } } }))}
+    onVocabDone={(key) => setChumashVocab(v => ({ ...v, [key]: {} }))}
+    onBack={handleSubjectBack}
+    onLogout={logout}
+    lastVisitedChumash={lastVisitedChumash}
+    onSetLastVisitedChumash={setLastVisitedChumash}
+    assignmentRange={chumashAssignmentRange}
+    onClearPerek={(sefer, perek) => {
+      const prefix = `${sefer}_${perek}_`;
+      const progressKeys = Object.keys(chumashProgress).filter(k => k.startsWith(prefix));
+      const quizKeys = Object.keys(chumashQuizProgress).filter(k => k.startsWith(prefix));
+      const newChProgress = {...chumashProgress};
+      progressKeys.forEach(k => delete newChProgress[k]);
+      const newChQuiz = {...chumashQuizProgress};
+      quizKeys.forEach(k => delete newChQuiz[k]);
+      setChumashProgress(newChProgress);
+      setChumashQuizProgress(newChQuiz);
+      const updates = {};
+      progressKeys.forEach(k => { updates[`chumashProgress.${k}`] = deleteField(); });
+      quizKeys.forEach(k => { updates[`chumashQuizProgress.${k}`] = deleteField(); });
+      if (Object.keys(updates).length > 0) {
+        updateDoc(doc(db, "students", student.email), updates);
+      }
+    }}
+    seenTutorial={!!seenTutorials.chumash2}
+    onTutorialSeen={() => markTutorialSeen("chumash2")}
   />
 );
 if (view === "seif") return (
@@ -4242,11 +5054,14 @@ if (view === "seif") return (
     status={seifProgress[activeSeif]}
     onMastered={handleMastered}
     onBack={() => { setReturnToSiman(true); setView("home"); }}
-    onVocabSave={(he, en, ctx) => setAllVocab(v => {
+    onGoToSubjects={handleSubjectBack}
+    fromAssignment={subjectOrigin === "classroom"}
+    onVocabSave={(he, en, ctx, lexical) => setAllVocab(v => {
       const key = stripNikud(he);
       const simanData = v[activeSiman] || {};
       const seifData = simanData[activeSeif] || {};
-      return { ...v, [activeSiman]: { ...simanData, [activeSeif]: { ...seifData, [key]: { he, en, ctx: ctx || "" } }}};
+      const existing = seifData[key] || {};
+      return { ...v, [activeSiman]: { ...simanData, [activeSeif]: { ...seifData, [key]: { ...existing, he, en, ctx: ctx || existing.ctx || "", ...(lexical ? { lexical } : {}) } }}};
     })}
     onVocabDone={handleVocabDone}
     onKriahDone={handleKriahDone}
@@ -4260,7 +5075,17 @@ if (view === "seif") return (
     quizScores={quizScores}
     onQuizScore={handleQuizScore}
     onNext={handleNextSeif}
+    onNavNext={() => {
+      const next = activeSeif + 1;
+      setActiveSeif(next);
+      setAllProgress(p => ({ ...p, [activeSiman]: { ...p[activeSiman], [next]: p[activeSiman]?.[next] || "reading" }}));
+    }}
+    onPrev={handlePrevSeif}
+    assignmentFromSeif={ksaAssignmentFromSeif}
+    assignmentToSeif={ksaAssignmentToSeif}
     student={student}
+    seenTutorial={!!seenTutorials.ksaStudy}
+    onTutorialSeen={() => markTutorialSeen("ksaStudy")}
   />
 );
 return (
@@ -4277,6 +5102,10 @@ return (
     seifCounts={seifCounts}
     lastVisited={lastVisited}
     startWithSimanOpen={ksaStartOpen}
+    seenTutorial={!!seenTutorials.ksa2}
+    onTutorialSeen={() => markTutorialSeen("ksa2")}
+    seenSimanTutorial={!!seenTutorials.ksaSiman}
+    onSimanTutorialSeen={() => markTutorialSeen("ksaSiman")}
   />
 );
 }
