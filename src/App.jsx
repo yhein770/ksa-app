@@ -3673,7 +3673,61 @@ if (done || filteredQueue.length === 0) {
   );
 }
 
-// ── DECK EDITOR (create / edit a Talmud Key deck; manual + AI) ─────────────────
+// ── DECK EDITOR (create / edit a Talmud Key deck; manual + chat with Claude) ──
+const DECK_CHAT_SYSTEM = `You are Claude, a Talmud and Gemara vocabulary expert, helping a teacher build and refine a flashcard deck. Each card has "he" (a Hebrew/Aramaic word or short phrase) and "en" (a concise English meaning).
+
+Talk with the teacher naturally, like a knowledgeable colleague. Each turn you receive the current deck, numbered from 1, followed by the teacher's message. Earlier turns show what you proposed and whether the teacher applied or discarded it.
+
+When the teacher asks you to create, add, fix, reword, vowelize, reorder, or remove cards, propose changes in "changes":
+- {"op":"add","index":0,"he":"...","en":"..."} appends a new card.
+- {"op":"edit","index":N,"he":"...","en":"..."} replaces card N with the full new he and en.
+- {"op":"remove","index":N,"he":"...","en":"..."} deletes card N; repeat its current he and en.
+Indexes always refer to the deck exactly as shown this turn. Only touch the cards the request is about. No duplicate terms.
+
+When the teacher asks a question or wants to discuss, answer in "reply" and leave "changes" empty. Keep "reply" short and plain: say what you changed and why, or answer the question. Mention anything you were unsure of. Nothing you propose takes effect until the teacher approves it.`;
+
+const DECK_CHAT_SCHEMA = {
+  type: "object",
+  properties: {
+    reply: { type: "string" },
+    changes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          op: { type: "string", enum: ["add", "edit", "remove"] },
+          index: { type: "integer" },
+          he: { type: "string" },
+          en: { type: "string" },
+        },
+        required: ["op", "index", "he", "en"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["reply", "changes"],
+  additionalProperties: false,
+};
+
+async function callDeckChat(messages) {
+  const r = await fetch("https://ksa-app-production.up.railway.app/api/claude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-opus-5-5",
+      max_tokens: 16000,
+      system: DECK_CHAT_SYSTEM,
+      output_config: { effort: "medium", format: { type: "json_schema", schema: DECK_CHAT_SCHEMA } },
+      messages,
+    }),
+  });
+  const d = await r.json();
+  if (d?.stop_reason === "refusal") throw new Error("refusal");
+  const text = (d?.content || []).find(b => b.type === "text")?.text;
+  if (!text) { console.error("Claude API error:", JSON.stringify(d)); throw new Error("no content"); }
+  return JSON.parse(text);
+}
+
 function DeckEditor({ deck, student, onCancel, onSaved }) {
   const [title, setTitle] = useState(deck?.title || "");
   const [description, setDescription] = useState(deck?.description || "");
@@ -3682,55 +3736,71 @@ function DeckEditor({ deck, student, onCancel, onSaved }) {
   const [genLoading, setGenLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
-  const [aiMode, setAiMode] = useState(deck?.cards?.length ? "edit" : "add"); // add | edit
+  // Chat thread. Assistant turns may carry a proposal: { changes, picked, base, status: pending|applied|discarded, appliedCount }
+  const [chat, setChat] = useState([]);
   const [undoCards, setUndoCards] = useState(null);
+  const chatEndRef = useRef(null);
 
   const filledCards = cards.filter(c => c.he.trim() && c.en.trim());
-  const editing = aiMode === "edit" && filledCards.length > 0;
+  const deckKey = JSON.stringify(filledCards);
 
-  async function generate() {
-    if (editing) return reviseCards();
-    if (!prompt.trim() || genLoading) return;
-    setGenLoading(true); setErr("");
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [chat.length, genLoading]);
+
+  function summarize(m) {
+    if (!m.proposal) return m.text;
+    const p = m.proposal;
+    const list = p.changes.map(c => c.op === "add" ? `+ ${c.he} — ${c.en}` : c.op === "remove" ? `− #${c.index + 1} ${c.he}` : `✎ #${c.index + 1} → ${c.he} — ${c.en}`).join("\n");
+    const status = p.status === "applied" ? `The teacher applied ${p.appliedCount} of ${p.changes.length}.` : p.status === "discarded" ? "The teacher discarded these." : "Not applied yet.";
+    return `${m.text}\n\n[Proposed changes]\n${list}\n${status}`;
+  }
+
+  async function send() {
+    const text = prompt.trim();
+    if (!text || genLoading) return;
+    const current = filledCards.map(c => ({ he: c.he.trim(), en: c.en.trim() }));
+    const history = chat.map(m => ({ role: m.role, content: m.role === "user" ? m.text : summarize(m) }));
+    const header = [title.trim() && `Deck title: ${title.trim()}`, description.trim() && `Description: ${description.trim()}`].filter(Boolean).join("\n");
+    const deckText = current.length ? current.map((c, i) => `${i + 1}. ${c.he} — ${c.en}`).join("\n") : "(empty — no cards yet)";
+    const messages = [...history, { role: "user", content: `${header ? header + "\n" : ""}Current deck:\n${deckText}\n\nTeacher: ${text}` }];
+
+    setChat(cs => [...cs, { role: "user", text }]);
+    setPrompt(""); setErr(""); setGenLoading(true);
     try {
-      const raw = await callClaude(
-        `Create a Talmud/Gemara vocabulary flashcard deck for this request:\n"${prompt.trim()}"\n\nThe request may be broad (e.g. a category of terms that appear throughout Shas) or narrow. Include the key Hebrew/Aramaic words or short phrases with concise English meanings.\n\nReturn ONLY a JSON array: [{"he":"Hebrew/Aramaic term","en":"concise English meaning"}]. Between 8 and 40 cards. No duplicates. No markdown, no code fences, no commentary.`,
-        "You are a Talmud vocabulary expert. Output ONLY a valid JSON array of {he,en} objects. No prose.", 3500
-      );
-      const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
-      const clean = (Array.isArray(parsed) ? parsed : []).filter(c => c && c.he && c.en).map(c => ({ he: String(c.he).trim(), en: String(c.en).trim() }));
-      if (!clean.length) throw new Error("empty");
-      setUndoCards(cards);
-      setCards(cs => [...cs.filter(c => c.he.trim() || c.en.trim()), ...clean]);
-      setPrompt("");
-      setAiMode("edit"); // next prompt refines this list rather than adding another batch
+      const out = await callDeckChat(messages);
+      const changes = (out.changes || [])
+        .map(c => ({ ...c, index: c.op === "add" ? -1 : c.index - 1 }))
+        .filter(c => c.op === "remove" ? current[c.index] : c.he?.trim() && c.en?.trim() && (c.op === "add" || current[c.index]))
+        .map(c => ({ ...c, he: c.he.trim(), en: c.en.trim(), old: c.op === "add" ? null : current[c.index] }));
+      setChat(cs => [...cs, {
+        role: "assistant", text: out.reply || "",
+        proposal: changes.length ? { changes, picked: changes.map(() => true), base: JSON.stringify(current), status: "pending" } : null,
+      }]);
     } catch (e) {
-      setErr("Couldn't generate cards from that. Try rephrasing your request.");
+      setChat(cs => cs.slice(0, -1));
+      setPrompt(text);
+      setErr(e.message === "refusal" ? "Claude declined that request. Try rewording it." : "Couldn't reach Claude. Please try again.");
     }
     setGenLoading(false);
   }
 
-  // Revise the existing card list in place per the instruction, instead of generating a fresh set.
-  async function reviseCards() {
-    if (!prompt.trim() || genLoading) return;
-    setGenLoading(true); setErr("");
-    const current = filledCards.map(c => ({ he: c.he.trim(), en: c.en.trim() }));
-    try {
-      const raw = await callClaude(
-        `Here is an existing Talmud/Gemara vocabulary flashcard deck as JSON:\n${JSON.stringify(current)}\n\nEdit this deck according to this instruction:\n"${prompt.trim()}"\n\nThe instruction may ask you to fix, reword, shorten, add, remove, reorder, or add vowels to cards. Leave every card the instruction does not touch exactly as it is, and keep the existing order unless asked to change it.\n\nReturn ONLY the full revised deck as a JSON array: [{"he":"Hebrew/Aramaic term","en":"concise English meaning"}]. No duplicates. No markdown, no code fences, no commentary.`,
-        "You are a Talmud vocabulary expert editing an existing flashcard deck. Output ONLY a valid JSON array of {he,en} objects. No prose.",
-        Math.max(3500, current.length * 60 + 1500)
-      );
-      const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
-      const clean = (Array.isArray(parsed) ? parsed : []).filter(c => c && c.he && c.en).map(c => ({ he: String(c.he).trim(), en: String(c.en).trim() }));
-      if (!clean.length) throw new Error("empty");
-      setUndoCards(cards);
-      setCards(clean);
-      setPrompt("");
-    } catch (e) {
-      setErr("Couldn't edit the cards with that. Try rephrasing your request.");
-    }
-    setGenLoading(false);
+  function updateProposal(idx, fn) {
+    setChat(cs => cs.map((m, i) => i === idx ? { ...m, proposal: fn(m.proposal) } : m));
+  }
+
+  function applyProposal(idx) {
+    const p = chat[idx].proposal;
+    const chosen = p.changes.filter((_, i) => p.picked[i]);
+    if (!chosen.length) return;
+    const next = filledCards.map(c => ({ ...c }));
+    const removed = new Set();
+    chosen.forEach(c => {
+      if (c.op === "edit") next[c.index] = { he: c.he, en: c.en };
+      if (c.op === "remove") removed.add(c.index);
+    });
+    const result = [...next.filter((_, i) => !removed.has(i)), ...chosen.filter(c => c.op === "add").map(c => ({ he: c.he, en: c.en }))];
+    setUndoCards(cards);
+    setCards(result.length ? result : [{ he: "", en: "" }]);
+    updateProposal(idx, pr => ({ ...pr, status: "applied", appliedCount: chosen.length }));
   }
 
   async function save() {
@@ -3752,6 +3822,69 @@ function DeckEditor({ deck, student, onCancel, onSaved }) {
   }
 
   const inputStyle = { width:"100%", border:`1px solid ${C.border}`, borderRadius:10, padding:"10px 12px", fontSize:15, fontFamily:"inherit", outline:"none", background:"#fff", color:C.label };
+  const heFont = { fontFamily:"'Heebo',sans-serif", fontWeight:600 };
+  const opStyle = {
+    add: { mark:"＋", color:C.green, bg:"rgba(52,199,89,.08)" },
+    edit: { mark:"✎", color:"#A05A00", bg:"rgba(184,134,11,.08)" },
+    remove: { mark:"−", color:C.red, bg:"rgba(255,59,48,.06)" },
+  };
+
+  function proposalView(m, idx) {
+    const p = m.proposal;
+    const stale = p.status === "pending" && p.base !== deckKey;
+    const nPicked = p.picked.filter(Boolean).length;
+    return (
+      <div style={{ marginTop:10, background:"#fff", border:`1px solid ${C.border}`, borderRadius:12, overflow:"hidden" }}>
+        <div style={{ padding:"8px 12px", fontSize:12, fontWeight:600, color:C.muted, borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+          <span>{p.changes.length} proposed change{p.changes.length !== 1 ? "s" : ""}</span>
+          {p.status === "pending" && !stale && (
+            <button onClick={() => updateProposal(idx, pr => ({ ...pr, picked: pr.picked.map(() => nPicked !== pr.picked.length) }))} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:12, color:C.brown, padding:0 }}>
+              {nPicked === p.picked.length ? "Uncheck all" : "Check all"}
+            </button>
+          )}
+        </div>
+        <div style={{ maxHeight:320, overflowY:"auto" }}>
+          {p.changes.map((c, i) => {
+            const s = opStyle[c.op];
+            const on = p.picked[i];
+            const dim = p.status !== "pending" || stale;
+            return (
+              <label key={i} style={{ display:"flex", gap:10, alignItems:"flex-start", padding:"8px 12px", borderBottom:`1px solid ${C.border}`, background: on && !dim ? s.bg : "transparent", cursor: dim ? "default" : "pointer", opacity: dim && !on ? .5 : 1 }}>
+                <input type="checkbox" checked={on} disabled={dim} onChange={() => updateProposal(idx, pr => ({ ...pr, picked: pr.picked.map((v, j) => j === i ? !v : v) }))} style={{ marginTop:3 }} />
+                <span style={{ color:s.color, fontWeight:700, width:14, flexShrink:0 }}>{s.mark}</span>
+                <div style={{ flex:1, fontSize:14, lineHeight:1.45, minWidth:0 }}>
+                  {c.op === "edit" ? (
+                    <>
+                      <div style={{ color:C.muted, textDecoration:"line-through" }}><span dir="rtl" style={heFont}>{c.old.he}</span> — {c.old.en}</div>
+                      <div style={{ color:C.label }}><span dir="rtl" style={heFont}>{c.he}</span> — {c.en}</div>
+                    </>
+                  ) : (
+                    <div style={{ color: c.op === "remove" ? C.muted : C.label, textDecoration: c.op === "remove" ? "line-through" : "none" }}>
+                      <span dir="rtl" style={heFont}>{c.he}</span> — {c.en}
+                    </div>
+                  )}
+                </div>
+                {c.op !== "add" && <span style={{ fontSize:11, color:C.muted, flexShrink:0 }}>#{c.index + 1}</span>}
+              </label>
+            );
+          })}
+        </div>
+        <div style={{ padding:"10px 12px", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+          {p.status === "applied" && <span style={{ fontSize:13, color:C.green, fontWeight:600 }}>✓ Applied {p.appliedCount} of {p.changes.length}</span>}
+          {p.status === "discarded" && <span style={{ fontSize:13, color:C.muted }}>Discarded</span>}
+          {stale && <span style={{ fontSize:13, color:C.muted }}>The deck changed since this was suggested. Ask Claude again to get changes for the current deck.</span>}
+          {p.status === "pending" && !stale && (
+            <>
+              <button onClick={() => applyProposal(idx)} disabled={!nPicked} style={{ background: nPicked ? C.brown : C.border, color:"#fff", border:"none", borderRadius:980, padding:"7px 16px", cursor: nPicked ? "pointer" : "default", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>
+                Apply {nPicked === p.changes.length ? "all" : nPicked}
+              </button>
+              <button onClick={() => updateProposal(idx, pr => ({ ...pr, status: "discarded" }))} style={{ background:"none", color:C.muted, border:`1px solid ${C.border}`, borderRadius:980, padding:"7px 16px", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Discard</button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -3762,33 +3895,43 @@ function DeckEditor({ deck, student, onCancel, onSaved }) {
       <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Short description (optional)" rows={2} style={{ ...inputStyle, marginBottom:18, resize:"vertical" }} />
 
       <div style={{ background:"rgba(184,134,11,.06)", border:"1px solid rgba(184,134,11,.15)", borderRadius:14, padding:16, marginBottom:20 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, marginBottom:8, flexWrap:"wrap" }}>
-          <div style={{ fontSize:13, fontWeight:600, color:"#6B4E1A" }}>✦ {editing ? "Edit these cards with AI" : "Generate cards with AI"}</div>
-          {filledCards.length > 0 && (
-            <div style={{ display:"flex", gap:4 }}>
-              {[["edit","Edit cards"],["add","Add new"]].map(([id, lbl]) => (
-                <button key={id} onClick={() => setAiMode(id)} style={{ background: aiMode === id ? "#6B4E1A" : "none", color: aiMode === id ? "#fff" : "#6B4E1A", border:"1px solid rgba(184,134,11,.3)", borderRadius:980, padding:"3px 10px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>{lbl}</button>
-              ))}
-            </div>
-          )}
-        </div>
+        <div style={{ fontSize:13, fontWeight:600, color:"#6B4E1A", marginBottom:4 }}>✦ Work on this deck with Claude</div>
+        <p style={{ fontSize:12, color:C.muted, marginBottom:12, lineHeight:1.45 }}>Ask for new cards, changes, or just questions. Claude remembers this conversation. Every change waits for you to check it and click Apply.</p>
+
+        {chat.length > 0 && (
+          <div style={{ maxHeight:520, overflowY:"auto", marginBottom:12, display:"flex", flexDirection:"column", gap:10 }}>
+            {chat.map((m, idx) => m.role === "user" ? (
+              <div key={idx} style={{ alignSelf:"flex-end", maxWidth:"85%", background:C.brown, color:"#fff", borderRadius:"14px 14px 4px 14px", padding:"8px 12px", fontSize:14, lineHeight:1.45, whiteSpace:"pre-wrap" }}>{m.text}</div>
+            ) : (
+              <div key={idx} style={{ alignSelf:"stretch" }}>
+                {m.text && <div style={{ background:"#fff", borderRadius:"14px 14px 14px 4px", padding:"8px 12px", fontSize:14, lineHeight:1.5, color:C.label, whiteSpace:"pre-wrap", boxShadow:"0 1px 2px rgba(0,0,0,.04)" }}>{m.text}</div>}
+                {m.proposal && proposalView(m, idx)}
+              </div>
+            ))}
+            {genLoading && <div style={{ fontSize:13, color:C.muted, padding:"4px 2px" }}>Claude is thinking…</div>}
+            <div ref={chatEndRef} />
+          </div>
+        )}
+
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={3}
-          placeholder={editing
-            ? "Say what to change — e.g. 'make the English shorter', 'add nikkud to every word', 'remove the duplicates', or 'add 5 more terms for asking a question'."
-            : "Describe what you want — e.g. 'the standard terms the Gemara uses to introduce a question and its resolution', or 'money/damages vocabulary in Bava Kamma'."}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder={filledCards.length
+            ? "e.g. 'add nikkud to every word', 'the English on #4 is wrong, it means…', 'add 5 more terms for questions', or 'which of these are Aramaic?'"
+            : "Describe the deck you want, e.g. 'the standard terms the Gemara uses to introduce a question and its answer'."}
           style={{ ...inputStyle, marginBottom:10, resize:"vertical" }} />
-        <Btn onClick={generate} disabled={genLoading || !prompt.trim()} bg={C.gold} style={{ width:"100%" }}>{genLoading ? (editing ? "Editing…" : "Generating…") : (editing ? `Apply to ${filledCards.length} cards` : "Generate cards")}</Btn>
+        <Btn onClick={send} disabled={genLoading || !prompt.trim()} bg={C.gold} style={{ width:"100%" }}>{genLoading ? "Claude is thinking…" : "Send"}</Btn>
         {undoCards && !genLoading && (
-          <button onClick={() => { setCards(undoCards); setUndoCards(null); }} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, color:"#6B4E1A", padding:0, marginTop:10 }}>↶ Undo last AI change</button>
+          <button onClick={() => { setCards(undoCards); setUndoCards(null); }} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, color:"#6B4E1A", padding:0, marginTop:10 }}>↶ Undo last applied change</button>
         )}
       </div>
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-        <span style={{ fontSize:13, fontWeight:600, color:C.label }}>Cards ({cards.filter(c => c.he.trim() && c.en.trim()).length})</span>
+        <span style={{ fontSize:13, fontWeight:600, color:C.label }}>Cards ({filledCards.length})</span>
         <button onClick={() => setCards(cs => [...cs, { he:"", en:"" }])} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"4px 10px", cursor:"pointer", fontFamily:"inherit", fontSize:13, color:C.brown }}>＋ Add card</button>
       </div>
       {cards.map((c, i) => (
-        <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 1fr 28px", gap:8, marginBottom:8, alignItems:"center" }}>
+        <div key={i} style={{ display:"grid", gridTemplateColumns:"22px 1fr 1fr 28px", gap:8, marginBottom:8, alignItems:"center" }}>
+          <span style={{ fontSize:11, color:C.muted, textAlign:"right" }}>{i + 1}</span>
           <input dir="rtl" value={c.he} onChange={e => setCards(cs => cs.map((x, idx) => idx === i ? { ...x, he: e.target.value } : x))} placeholder="עברית" style={{ ...inputStyle, fontFamily:"'Heebo',sans-serif" }} />
           <input value={c.en} onChange={e => setCards(cs => cs.map((x, idx) => idx === i ? { ...x, en: e.target.value } : x))} placeholder="English" style={inputStyle} />
           <button onClick={() => setCards(cs => cs.filter((_, idx) => idx !== i))} style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, fontSize:18, lineHeight:1 }}>×</button>
