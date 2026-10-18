@@ -3682,8 +3682,14 @@ function DeckEditor({ deck, student, onCancel, onSaved }) {
   const [genLoading, setGenLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [aiMode, setAiMode] = useState(deck?.cards?.length ? "edit" : "add"); // add | edit
+  const [undoCards, setUndoCards] = useState(null);
+
+  const filledCards = cards.filter(c => c.he.trim() && c.en.trim());
+  const editing = aiMode === "edit" && filledCards.length > 0;
 
   async function generate() {
+    if (editing) return reviseCards();
     if (!prompt.trim() || genLoading) return;
     setGenLoading(true); setErr("");
     try {
@@ -3694,10 +3700,35 @@ function DeckEditor({ deck, student, onCancel, onSaved }) {
       const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
       const clean = (Array.isArray(parsed) ? parsed : []).filter(c => c && c.he && c.en).map(c => ({ he: String(c.he).trim(), en: String(c.en).trim() }));
       if (!clean.length) throw new Error("empty");
+      setUndoCards(cards);
       setCards(cs => [...cs.filter(c => c.he.trim() || c.en.trim()), ...clean]);
       setPrompt("");
+      setAiMode("edit"); // next prompt refines this list rather than adding another batch
     } catch (e) {
       setErr("Couldn't generate cards from that. Try rephrasing your request.");
+    }
+    setGenLoading(false);
+  }
+
+  // Revise the existing card list in place per the instruction, instead of generating a fresh set.
+  async function reviseCards() {
+    if (!prompt.trim() || genLoading) return;
+    setGenLoading(true); setErr("");
+    const current = filledCards.map(c => ({ he: c.he.trim(), en: c.en.trim() }));
+    try {
+      const raw = await callClaude(
+        `Here is an existing Talmud/Gemara vocabulary flashcard deck as JSON:\n${JSON.stringify(current)}\n\nEdit this deck according to this instruction:\n"${prompt.trim()}"\n\nThe instruction may ask you to fix, reword, shorten, add, remove, reorder, or add vowels to cards. Leave every card the instruction does not touch exactly as it is, and keep the existing order unless asked to change it.\n\nReturn ONLY the full revised deck as a JSON array: [{"he":"Hebrew/Aramaic term","en":"concise English meaning"}]. No duplicates. No markdown, no code fences, no commentary.`,
+        "You are a Talmud vocabulary expert editing an existing flashcard deck. Output ONLY a valid JSON array of {he,en} objects. No prose.",
+        Math.max(3500, current.length * 60 + 1500)
+      );
+      const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+      const clean = (Array.isArray(parsed) ? parsed : []).filter(c => c && c.he && c.en).map(c => ({ he: String(c.he).trim(), en: String(c.en).trim() }));
+      if (!clean.length) throw new Error("empty");
+      setUndoCards(cards);
+      setCards(clean);
+      setPrompt("");
+    } catch (e) {
+      setErr("Couldn't edit the cards with that. Try rephrasing your request.");
     }
     setGenLoading(false);
   }
@@ -3731,11 +3762,25 @@ function DeckEditor({ deck, student, onCancel, onSaved }) {
       <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Short description (optional)" rows={2} style={{ ...inputStyle, marginBottom:18, resize:"vertical" }} />
 
       <div style={{ background:"rgba(184,134,11,.06)", border:"1px solid rgba(184,134,11,.15)", borderRadius:14, padding:16, marginBottom:20 }}>
-        <div style={{ fontSize:13, fontWeight:600, color:"#6B4E1A", marginBottom:8 }}>✦ Generate cards with AI</div>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, marginBottom:8, flexWrap:"wrap" }}>
+          <div style={{ fontSize:13, fontWeight:600, color:"#6B4E1A" }}>✦ {editing ? "Edit these cards with AI" : "Generate cards with AI"}</div>
+          {filledCards.length > 0 && (
+            <div style={{ display:"flex", gap:4 }}>
+              {[["edit","Edit cards"],["add","Add new"]].map(([id, lbl]) => (
+                <button key={id} onClick={() => setAiMode(id)} style={{ background: aiMode === id ? "#6B4E1A" : "none", color: aiMode === id ? "#fff" : "#6B4E1A", border:"1px solid rgba(184,134,11,.3)", borderRadius:980, padding:"3px 10px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>{lbl}</button>
+              ))}
+            </div>
+          )}
+        </div>
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={3}
-          placeholder="Describe what you want — e.g. 'the standard terms the Gemara uses to introduce a question and its resolution', or 'money/damages vocabulary in Bava Kamma'."
+          placeholder={editing
+            ? "Say what to change — e.g. 'make the English shorter', 'add nikkud to every word', 'remove the duplicates', or 'add 5 more terms for asking a question'."
+            : "Describe what you want — e.g. 'the standard terms the Gemara uses to introduce a question and its resolution', or 'money/damages vocabulary in Bava Kamma'."}
           style={{ ...inputStyle, marginBottom:10, resize:"vertical" }} />
-        <Btn onClick={generate} disabled={genLoading || !prompt.trim()} bg={C.gold} style={{ width:"100%" }}>{genLoading ? "Generating…" : "Generate cards"}</Btn>
+        <Btn onClick={generate} disabled={genLoading || !prompt.trim()} bg={C.gold} style={{ width:"100%" }}>{genLoading ? (editing ? "Editing…" : "Generating…") : (editing ? `Apply to ${filledCards.length} cards` : "Generate cards")}</Btn>
+        {undoCards && !genLoading && (
+          <button onClick={() => { setCards(undoCards); setUndoCards(null); }} style={{ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, color:"#6B4E1A", padding:0, marginTop:10 }}>↶ Undo last AI change</button>
+        )}
       </div>
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
