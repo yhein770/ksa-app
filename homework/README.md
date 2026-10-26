@@ -44,7 +44,7 @@ Open the teacher page, sign in, and press **Copy student link** on the Kiddushin
 ## Making an assignment
 
 1. Open the teacher page and go to **Assignments**, then **New assignment**.
-2. Paste the Gemara text. Add the translation if you have it: students don't see it, but Claude is much more accurate with it.
+2. Type the daf (like `Kiddushin 29a`) and press **Get text from Sefaria**, then tick the pieces you want. This brings in the Hebrew and the English, with the literal translation in bold and the explanation in plain text, the way students see it. You can also paste text in yourself.
 3. Say what it should focus on (for example "reading, the concept, the circular logic in the answer"), pick the level and question types, and press **Draft it with Claude**. It takes 30 to 60 seconds.
 4. Read every question. Edit anything directly, or type a change into **Ask Claude to change something**. The yellow box flags problems like a correct answer that's the longest choice. The blue box lists the claims Claude says to check against the text.
 5. **Preview as a student** opens it the way students see it. Students can't open it until you publish.

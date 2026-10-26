@@ -41,6 +41,12 @@ header.top h1 { font-size: 22px; margin: 0; line-height: 1.25; }
 .gemara .piece { margin-bottom: 18px; }
 .gemara .piece p { margin-bottom: 6px; }
 .gemara p.en { direction: ltr; text-align: left; font-family: Inter, system-ui, sans-serif; font-size: 15px; line-height: 1.55; color: var(--muted); }
+.gemara p.en strong { color: var(--ink); font-weight: 600; }
+.picker { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px; }
+.segs { max-height: 340px; overflow: auto; margin: 4px 0 10px; }
+.seg { display: flex; gap: 10px; align-items: flex-start; padding: 8px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.seg input { margin-top: 6px; }
+.seg .he { font-family: "Frank Ruhl Libre", serif; font-size: 17px; direction: rtl; unicode-bidi: plaintext; }
 .pesukim { font-size: 17px; margin: 0; }
 .pesukim div { margin: 2px 0; }
 .he { font-family: "Frank Ruhl Libre", serif; font-size: 1.1em; }
