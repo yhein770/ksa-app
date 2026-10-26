@@ -5,6 +5,7 @@ import {
 } from "./firebase.js";
 import { loadAssignment } from "./store.js";
 import { bareTitle } from "./assignments.js";
+import { boldHtml } from "./sefaria.js";
 
 const params = new URLSearchParams(location.search);
 const app = document.getElementById("app");
@@ -110,7 +111,7 @@ function render() {
       <div class="gemara">${A.gemara.map((p, i) => `
         <div class="piece">
           <p>${esc(p)}</p>
-          ${showEnglish && A.english?.[i] ? `<p class="en">${esc(A.english[i])}</p>` : ""}
+          ${showEnglish && A.english?.[i] ? `<p class="en">${boldHtml(A.english[i], esc)}</p>` : ""}
         </div>`).join("")}</div>
       <div class="pesukim">${(A.pesukim || []).map((p) => `<div><span class="muted small">${esc(p.ref)}:</span> <bdi class="he">${esc(p.he)}</bdi></div>`).join("")}</div>
     </section>

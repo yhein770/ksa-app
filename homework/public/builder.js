@@ -3,6 +3,7 @@ import { esc, heb } from "./firebase.js";
 import { renumber, checkAssignment, questionCount } from "./assignments.js";
 import { draftAssignment, reviseAssignment } from "./generator.js";
 import { saveAssignment, deleteAssignment, newId } from "./store.js";
+import { loadSefaria, bareHebrew } from "./sefaria.js";
 
 const BLANK_Q = {
   select: () => ({ type: "select", prompt: "", options: ["", ""], answer: "" }),
@@ -34,6 +35,60 @@ export function openBuilder(opts) {
     level: "easy", questionCount: 6, types: ["select", "order", "mcq", "dialogue"], voice: true, voiceFirst: true, voiceMinutes: 4,
   };
   let busy = "", message = null, dirty = false;
+  let picker = { ref: "", busy: false, error: "", segs: null };
+
+  // ---------- Sefaria picker (used on both screens) ----------
+  function pickerHtml() {
+    return `
+      <div class="picker">
+        <div class="row">
+          <input data-pk="ref" value="${esc(picker.ref)}" placeholder="e.g. Kiddushin 29a" style="max-width:260px">
+          <button class="btn secondary tiny" data-act="sload" ${picker.busy ? "disabled" : ""}>${picker.busy ? "Loading…" : "Get text from Sefaria"}</button>
+          <span class="muted small">Brings in the Hebrew and the English, with the literal translation in bold.</span>
+        </div>
+        ${picker.error ? `<div class="notice bad">${esc(picker.error)}</div>` : ""}
+        ${picker.segs ? `
+          <p class="small muted" style="margin:10px 0 4px">Tick the pieces this assignment covers, in order:</p>
+          <div class="segs">${picker.segs.map((sg, i) => `
+            <label class="seg"><input type="checkbox" data-seg="${i}" ${sg.checked ? "checked" : ""}>
+              <span><span class="he">${esc(sg.he.slice(0, 90))}${sg.he.length > 90 ? "…" : ""}</span><br>
+              <span class="muted small">${esc(sg.en.replace(/\*\*/g, "").slice(0, 120))}…</span></span></label>`).join("")}</div>
+          <div class="row"><button class="btn tiny" data-act="suse">Use the ticked pieces</button>
+          <span class="muted small">This replaces the Hebrew and English below.</span></div>` : ""}
+      </div>`;
+  }
+
+  async function loadPicker() {
+    picker.busy = true; picker.error = ""; render();
+    try {
+      const segs = await loadSefaria(picker.ref);
+      // Pre-tick pieces that match Hebrew already in this assignment.
+      const have = (a?.gemara || []).map(bareHebrew).filter(Boolean);
+      picker.segs = segs.map((sg) => {
+        const b = bareHebrew(sg.he);
+        return { ...sg, checked: !!b && have.some((h) => h.includes(b) || b.includes(h)) };
+      });
+    } catch (e) {
+      picker.error = e.message; picker.segs = null;
+    }
+    picker.busy = false; render();
+  }
+
+  function usePicker() {
+    const chosen = (picker.segs || []).filter((sg) => sg.checked);
+    if (!chosen.length) { picker.error = "Tick at least one piece."; return render(); }
+    const he = chosen.map((sg) => sg.he), en = chosen.map((sg) => sg.en);
+    if (a) {
+      a.gemara = he; a.english = en;
+      a.sourceText = he.join("\n\n"); a.translation = en.join("\n\n");
+      dirty = true;
+    } else {
+      form.gemara = he.join("\n\n"); form.translation = en.join("\n\n");
+    }
+    picker.segs = null; picker.error = "";
+    message = { kind: "good", text: `Brought in ${chosen.length} piece${chosen.length > 1 ? "s" : ""} from Sefaria.${a ? " Save to keep it." : ""}` };
+    render();
+  }
 
   // ---------- step 1: the request form ----------
   function renderForm() {
@@ -45,7 +100,8 @@ export function openBuilder(opts) {
       <div class="card">
         <label class="field"><span>Title <span class="muted small">(optional, Claude will suggest one)</span></span>
           <input data-f="title" value="${esc(form.title)}" placeholder="Kiddushin 29a: Pidyon HaBen"></label>
-        <label class="field"><span>Gemara text <span class="muted small">(paste it; leave a blank line between pieces)</span></span>
+        <div class="field"><span>Get the text from Sefaria, or paste it below</span>${pickerHtml()}</div>
+        <label class="field"><span>Gemara text <span class="muted small">(leave a blank line between pieces)</span></span>
           <textarea data-f="gemara" rows="8" dir="rtl" class="he-input">${esc(form.gemara)}</textarea></label>
         <label class="field"><span>English translation <span class="muted small">(optional; shown under each piece for students, and makes Claude more accurate). Blank line between pieces, matching the Hebrew.</span></span>
           <textarea data-f="translation" rows="5">${esc(form.translation)}</textarea></label>
@@ -168,11 +224,12 @@ export function openBuilder(opts) {
 
       <div class="card">
         <h2>Basics</h2>
+        <div class="field"><span>Replace the text from Sefaria</span>${pickerHtml()}</div>
         <label class="field"><span>Title</span><input data-a="title" value="${esc(a.title)}"></label>
         <label class="field"><span>Instructions students see at the top</span><textarea data-a="intro" rows="3">${esc(a.intro)}</textarea></label>
         <label class="field"><span>Gemara text (blank line between pieces)</span>
           <textarea data-a="gemara" rows="8" dir="rtl" class="he-input">${esc((a.gemara || []).join("\n\n"))}</textarea></label>
-        <label class="field"><span>English under each piece (blank line between pieces, same order as the Hebrew)</span>
+        <label class="field"><span>English under each piece (blank line between pieces, same order as the Hebrew). Put **double asterisks** around words to bold them.</span>
           <textarea data-a="english" rows="8">${esc((a.english || []).join("\n\n"))}</textarea></label>
         <div class="field"><span>Pesukim (verses) shown under the text</span>
           ${(a.pesukim || []).map((p, i) => `
@@ -232,6 +289,8 @@ export function openBuilder(opts) {
   // ---------- events ----------
   function onInput(e) {
     const t = e.target;
+    if (t.dataset.pk) { picker.ref = t.value; return; }
+    if (t.dataset.seg !== undefined) { picker.segs[+t.dataset.seg].checked = t.checked; return; }
     if (t.dataset.f) {
       const k = t.dataset.f;
       if (k === "voice") { form.voice = t.value !== "no"; form.voiceFirst = t.value === "first"; render(); return; }
@@ -292,6 +351,8 @@ export function openBuilder(opts) {
     if (!b) return;
     const act = b.dataset.act;
     const P = +b.dataset.p, Q = +b.dataset.q;
+    if (act === "sload") return loadPicker();
+    if (act === "suse") return usePicker();
     if (act === "exit") {
       if (dirty && !confirm("You have unsaved changes. Leave anyway?")) return;
       return onExit();
