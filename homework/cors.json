@@ -1,0 +1,7 @@
+[
+  {
+    "origin": ["https://ksa-homework.web.app", "https://ksa-homework.firebaseapp.com"],
+    "method": ["GET"],
+    "maxAgeSeconds": 3600
+  }
+]
