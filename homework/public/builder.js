@@ -47,7 +47,7 @@ export function openBuilder(opts) {
           <input data-f="title" value="${esc(form.title)}" placeholder="Kiddushin 29a: Pidyon HaBen"></label>
         <label class="field"><span>Gemara text <span class="muted small">(paste it; leave a blank line between pieces)</span></span>
           <textarea data-f="gemara" rows="8" dir="rtl" class="he-input">${esc(form.gemara)}</textarea></label>
-        <label class="field"><span>Translation <span class="muted small">(optional, but makes Claude much more accurate; students won't see it)</span></span>
+        <label class="field"><span>English translation <span class="muted small">(optional; shown under each piece for students, and makes Claude more accurate). Blank line between pieces, matching the Hebrew.</span></span>
           <textarea data-f="translation" rows="5">${esc(form.translation)}</textarea></label>
         <label class="field"><span>What should it focus on?</span>
           <textarea data-f="focus" rows="3" placeholder="e.g. reading the text, the concept, the circular logic in the answer">${esc(form.focus)}</textarea></label>
@@ -172,6 +172,8 @@ export function openBuilder(opts) {
         <label class="field"><span>Instructions students see at the top</span><textarea data-a="intro" rows="3">${esc(a.intro)}</textarea></label>
         <label class="field"><span>Gemara text (blank line between pieces)</span>
           <textarea data-a="gemara" rows="8" dir="rtl" class="he-input">${esc((a.gemara || []).join("\n\n"))}</textarea></label>
+        <label class="field"><span>English under each piece (blank line between pieces, same order as the Hebrew)</span>
+          <textarea data-a="english" rows="8">${esc((a.english || []).join("\n\n"))}</textarea></label>
         <div class="field"><span>Pesukim (verses) shown under the text</span>
           ${(a.pesukim || []).map((p, i) => `
             <div class="pasuk">
@@ -245,7 +247,7 @@ export function openBuilder(opts) {
     dirty = true;
     if (t.dataset.a) {
       const k = t.dataset.a;
-      a[k] = k === "gemara" ? paras(t.value) : t.value;
+      a[k] = k === "gemara" || k === "english" ? paras(t.value) : t.value;
       return;
     }
     if (t.dataset.pasuk !== undefined) { a.pesukim[+t.dataset.pasuk][t.dataset.k] = t.value; return; }
@@ -295,7 +297,7 @@ export function openBuilder(opts) {
       return onExit();
     }
     if (act === "scratch") {
-      a = { title: form.title, intro: "", gemara: paras(form.gemara), pesukim: [],
+      a = { title: form.title, intro: "", gemara: paras(form.gemara), english: paras(form.translation), pesukim: [],
             parts: [{ title: "Part A", questions: [] }], voice: null, status: "draft",
             sourceText: form.gemara, translation: form.translation, focus: form.focus };
       dirty = true; message = null; return render();
@@ -311,7 +313,7 @@ export function openBuilder(opts) {
           level: { easy: "Easy. Students struggle: use word banks and dropdowns, very short sentences, concrete examples.",
                    standard: "Standard high school level.", challenging: "Challenging: more reasoning, fewer hints." }[form.level],
         });
-        a = { ...d, title: form.title.trim() || d.title, gemara: paras(form.gemara), status: "draft", voiceFirst: form.voice && form.voiceFirst,
+        a = { ...d, title: form.title.trim() || d.title, gemara: paras(form.gemara), english: paras(form.translation), status: "draft", voiceFirst: form.voice && form.voiceFirst,
               sourceText: form.gemara, translation: form.translation, focus: form.focus };
         dirty = true;
         message = { kind: "good", text: "Here's Claude's draft. Read every question, fix anything, then save or publish." };
@@ -328,7 +330,7 @@ export function openBuilder(opts) {
       try {
         const d = await reviseAssignment(a, a.sourceText || a.gemara.join("\n\n"), form.revise);
         const keep = { id: a.id, status: a.status, createdBy: a.createdBy, voiceFirst: a.voiceFirst,
-                       gemara: a.gemara, sourceText: a.sourceText, translation: a.translation, focus: a.focus };
+                       gemara: a.gemara, english: a.english, sourceText: a.sourceText, translation: a.translation, focus: a.focus };
         a = { ...d, ...keep };
         form.revise = ""; dirty = true;
         message = { kind: "good", text: "Revised. Check the changes, then save." };

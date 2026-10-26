@@ -13,6 +13,11 @@ export const ASSIGNMENTS = [
       "וְאִיהִי מְנָלַן דְּלָא מִיפַּקְדָה? דִּכְתִיב: ״תִּיפָּדֶה״ – ״תִּפְדֶּה״, כֹּל שֶׁמְּצֻוֶּוה לִפְדּוֹת אֶת עַצְמוֹ – מְצֻוֶּוה לִפְדּוֹת אֶת אֲחֵרִים, וְכֹל שֶׁאֵינוֹ מְצֻוֶּוה לִפְדּוֹת אֶת עַצְמוֹ – אֵינוֹ מְצֻוֶּוה לִפְדּוֹת אֲחֵרִים.",
       "וְאִיהִי מְנָלַן דְּלָא מִיחַיְּיבָא לְמִיפְרַק נַפְשַׁהּ? דִּכְתִיב: ״תִּפְדֶּה״ – ״תִּיפָּדֶה״, כֹּל שֶׁאֲחֵרִים מְצֻוִּוים לִפְדּוֹתוֹ – מְצֻוֶּוה לִפְדּוֹת אֶת עַצְמוֹ, וְכֹל שֶׁאֵין אֲחֵרִים מְצֻוִּוים לִפְדּוֹתוֹ – אֵין מְצֻוֶּוה לִפְדּוֹת אֶת עַצְמוֹ. וּמִנַּיִן שֶׁאֵין אֲחֵרִים מְצֻוִּוין לִפְדּוֹתָהּ? דְּאָמַר קְרָא: ״כׇּל בְּכוֹר בָּנֶיךָ תִּפְדֶּה״ – בָּנֶיךָ וְלֹא בְּנוֹתֶיךָ.",
     ],
+    english: [
+      "The baraita teaches that a father is obligated to redeem his son. The Gemara asks: From where do we derive this? The Gemara answers that this is as it is written: “All the firstborn of your sons you shall redeem” (Exodus 34:20). And in a case where one’s father does not redeem him he is obligated to redeem himself, as it is written: “You shall redeem [pado tifde]” (Numbers 18:15). The repetition of the verb indicates that a firstborn is required to be redeemed in any case, even if his father neglects to do so.",
+      "And from where do we derive that a mother is not commanded to redeem her son? As it is written: “You shall redeem [tifde]” which can be read as: You shall be redeemed [tippadeh]. This indicates that whoever is commanded to redeem himself is commanded to redeem others, and whoever is not commanded to redeem himself is not commanded to redeem others. Since a woman is not commanded to redeem herself, she is not commanded to redeem her son either.",
+      "The Gemara asks: And from where do we derive that she is not obligated to redeem herself? The Gemara answers that this is as it is written: “You shall redeem [tifde],” which can be read as: You shall be redeemed [tippadeh]. This indicates that any person whom others are commanded to redeem is commanded to redeem himself, and any person whom others are not commanded to redeem is not commanded to redeem himself. Since there is no mitzva for a parent to redeem his daughter, there is similarly no mitzva for a daughter to redeem herself. And from where is it derived that others are not commanded to redeem a daughter? As the verse states: “All the firstborn of your sons you shall redeem” (Exodus 34:20), i.e., your sons and not your daughters.",
+    ],
     pesukim: [
       { he: "כֹּל בְּכוֹר בָּנֶיךָ תִּפְדֶּה", ref: "Shemos 34:20" },
       { he: "אַךְ פָּדֹה תִפְדֶּה אֵת בְּכוֹר הָאָדָם", ref: "Bamidbar 18:15" },
@@ -215,6 +220,9 @@ export function checkAssignment(a) {
     }
   }
   if (a.voice && !a.voice.checklist?.length) warnings.push("The voice memo has no checklist.");
+  if (a.english?.length && a.english.length !== a.gemara?.length) {
+    warnings.push(`The Hebrew has ${a.gemara.length} pieces but the English has ${a.english.length}. Separate both with blank lines in the same places so each English piece sits under its Hebrew.`);
+  }
   return { errors, warnings };
 }
 
