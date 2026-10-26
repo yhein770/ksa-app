@@ -11,6 +11,7 @@ const app = document.getElementById("app");
 let A = null;
 
 let user = null;
+let showEnglish = true;
 let answers = {};
 let existing = null;          // submission already saved in Firestore
 let recording = null;         // { blob, ext, type, seconds, url } for a new, unsaved recording
@@ -105,7 +106,12 @@ function render() {
     ${existing ? submittedBanner() : ""}
     <section class="card">
       ${A.intro ? `<p style="margin-top:0">${heb(A.intro)}</p>` : ""}
-      <div class="gemara">${A.gemara.map((p) => `<p>${esc(p)}</p>`).join("")}</div>
+      ${A.english?.some(Boolean) ? `<div class="row" style="justify-content:flex-end;margin-bottom:6px"><button class="btn ghost tiny" id="toggleEn">${showEnglish ? "Hide English" : "Show English"}</button></div>` : ""}
+      <div class="gemara">${A.gemara.map((p, i) => `
+        <div class="piece">
+          <p>${esc(p)}</p>
+          ${showEnglish && A.english?.[i] ? `<p class="en">${esc(A.english[i])}</p>` : ""}
+        </div>`).join("")}</div>
       <div class="pesukim">${(A.pesukim || []).map((p) => `<div><span class="muted small">${esc(p.ref)}:</span> <bdi class="he">${esc(p.he)}</bdi></div>`).join("")}</div>
     </section>
     ${A.voiceFirst ? voiceSection : ""}
@@ -118,6 +124,8 @@ function render() {
     <div id="status"></div>`;
 
   app.querySelector("#signout").onclick = () => signOut(auth);
+  const tg = app.querySelector("#toggleEn");
+  if (tg) tg.onclick = () => { showEnglish = !showEnglish; saveDraft(); render(); };
   wireQuestions();
   if (A.voice) wireVoice();
   app.querySelector("#submit").onclick = submit;

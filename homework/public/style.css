@@ -38,6 +38,9 @@ header.top h1 { font-size: 22px; margin: 0; line-height: 1.25; }
 .small { font-size: 14px; }
 
 .gemara p { direction: rtl; text-align: right; font-family: "Frank Ruhl Libre", serif; font-size: 22px; line-height: 1.8; margin: 0 0 14px; }
+.gemara .piece { margin-bottom: 18px; }
+.gemara .piece p { margin-bottom: 6px; }
+.gemara p.en { direction: ltr; text-align: left; font-family: Inter, system-ui, sans-serif; font-size: 15px; line-height: 1.55; color: var(--muted); }
 .pesukim { font-size: 17px; margin: 0; }
 .pesukim div { margin: 2px 0; }
 .he { font-family: "Frank Ruhl Libre", serif; font-size: 1.1em; }
