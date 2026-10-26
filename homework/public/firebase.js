@@ -18,6 +18,7 @@ const firebaseConfig = {
 };
 
 export const WHISPER_URL = "https://ksa-app-production.up.railway.app/api/whisper";
+export const WHISPER_FROM_URL = "https://ksa-app-production.up.railway.app/api/whisper-from-url";
 export const SUBMISSIONS = "homeworkSubmissions";
 export const ASSIGNMENTS_COL = "homeworkAssignments";
 export const CLAUDE_URL = "https://ksa-app-production.up.railway.app/api/claude";
@@ -56,6 +57,20 @@ export async function transcribe(blob, filename) {
   const r = await fetch(WHISPER_URL, { method: "POST", body: form });
   if (!r.ok) throw new Error(`Transcription server returned ${r.status}`);
   const d = await r.json();
+  if (d.error) throw new Error(typeof d.error === "string" ? d.error : d.error.message || "Transcription failed");
+  if (typeof d.text !== "string") throw new Error("No transcript came back");
+  return d.text.trim();
+}
+
+// Has the proxy download a saved recording and transcribe it (used by "Try again").
+export async function transcribeFromUrl(url) {
+  const r = await fetch(WHISPER_FROM_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  let d;
+  try { d = await r.json(); } catch { throw new Error(`Transcription server returned ${r.status}`); }
   if (d.error) throw new Error(typeof d.error === "string" ? d.error : d.error.message || "Transcription failed");
   if (typeof d.text !== "string") throw new Error("No transcript came back");
   return d.text.trim();

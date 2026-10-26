@@ -27,25 +27,9 @@ Go to the Firebase console, open **kitzur-app1**, then **Storage**, then the **R
 
 In the same project: **Authentication**, then **Settings**, then **Authorized domains**. Click **Add domain** and add `ksa-homework.web.app`.
 
-### 4. Make iPhone recordings transcribe
+### 4. Proxy changes (already done)
 
-iPhones record in a different audio format than Chrome. Your Railway proxy currently labels every file as `.webm`, which can make Whisper reject iPhone recordings. In the **ksa-app** repo, in `server.js`, inside `app.post('/api/whisper', ...)`, replace these two lines:
-
-```js
-    const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
-    form.set('file', blob, 'audio.webm');
-```
-
-with:
-
-```js
-    const type = req.file.mimetype || 'audio/webm';
-    const name = req.file.originalname || 'audio.webm';
-    const blob = new Blob([req.file.buffer], { type });
-    form.set('file', blob, name);
-```
-
-Then commit and push so Railway redeploys. The KSA app keeps working the same, since it already sends `recording.webm`.
+`server.js` in the ksa-app repo passes each recording's real format to Whisper, so iPhone recordings transcribe. It also has a `/api/whisper-from-url` route that the teacher page's **Try again** button uses. Railway deploys these automatically from GitHub.
 
 ### 5. Put the site online
 
@@ -53,17 +37,7 @@ Then commit and push so Railway redeploys. The KSA app keeps working the same, s
 firebase deploy --only hosting
 ```
 
-### 6. (Optional) Turn on the "Transcribe now" button
-
-If a transcript fails, the teacher page has a "Transcribe now" button. For it to work, the storage bucket has to let the site download audio. This needs the Google Cloud command line tool (`gsutil`) installed once:
-
-```
-gsutil cors set cors.json gs://kitzur-app1.firebasestorage.app
-```
-
-Everything else works without this step. Recordings are always saved and playable on the teacher page.
-
-### 7. Test it
+### 6. Test it
 
 Open the teacher page, sign in, and press **Copy student link** on the Kiddushin 29a assignment. Open that link, answer, record 10 seconds, and submit. Back on the teacher page, under **Submissions**, you should see your submission with the audio and transcript. Then try **New assignment** with a short piece of Gemara.
 

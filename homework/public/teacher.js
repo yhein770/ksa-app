@@ -1,7 +1,7 @@
 import {
   auth, db, storage, signIn, signOut, onAuthStateChanged,
   doc, getDoc, updateDoc, collection, query, where, getDocs, ref, getDownloadURL,
-  SUBMISSIONS, transcribe, esc, heb,
+  SUBMISSIONS, transcribeFromUrl, esc, heb,
 } from "./firebase.js";
 import { scoreAnswers, questionCount } from "./assignments.js";
 import { listAssignments } from "./store.js";
@@ -306,9 +306,7 @@ async function retry(id, btn) {
   btn.textContent = "Transcribing…";
   try {
     const url = await getDownloadURL(ref(storage, s.audioPath));
-    const blob = await (await fetch(url)).blob();
-    const ext = s.audioPath.split(".").pop();
-    const text = await transcribe(blob, `memo.${ext}`);
+    const text = await transcribeFromUrl(url);
     await updateDoc(doc(db, SUBMISSIONS, id), { transcript: text, transcriptStatus: "done", transcriptError: "" });
     Object.assign(s, { transcript: text, transcriptStatus: "done", transcriptError: "" });
     const open = new Set([...app.querySelectorAll("details.sub[open]")].map((d) => d.dataset.id));
@@ -319,7 +317,7 @@ async function retry(id, btn) {
     btn.disabled = false;
     btn.textContent = "Try again";
     const msg = /Failed to fetch|NetworkError|Load failed/i.test(e.message)
-      ? "The browser blocked downloading the audio. See the CORS step in the README."
+      ? "Couldn't reach the transcription server. Try again in a minute."
       : e.message;
     btn.insertAdjacentHTML("afterend", `<div class="small" style="margin-top:6px">${esc(msg)}</div>`);
   }
