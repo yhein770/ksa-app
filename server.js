@@ -32,31 +32,65 @@ app.post('/api/claude', async (req, res) => {
   }
 });
 
+// Sends one audio file to OpenAI's transcription API.
+// opts: { model, language, prompt } (all optional)
+async function transcribeAudio(buffer, type, filename, opts = {}) {
+  const FormDataNode = (await import('formdata-node')).FormData;
+  const { Blob } = await import('buffer');
+  const form = new FormDataNode();
+  form.set('file', new Blob([buffer], { type }), filename);
+  // Model is controlled by the client; defaults to whisper-1 so existing
+  // app calls behave exactly as before. The test bench sends gpt-4o-mini-transcribe.
+  form.set('model', opts.model || 'whisper-1');
+  form.set('temperature', '0');
+  if (opts.language) form.set('language', opts.language);
+  // Prompt forwarded as-is. The old Hebrew prompt-doubling is removed: it
+  // amplified prompt-echo (Whisper "transcribing" reference text that was
+  // never spoken), which inflated kriah scores unpredictably.
+  if (opts.prompt) form.set('prompt', opts.prompt);
+  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: form
+  });
+  return response.json();
+}
+
+// The file's real type and name are passed through, so iPhone recordings
+// (audio/mp4, .m4a) transcribe too. The KSA app sends recording.webm, so it
+// behaves exactly as before.
 app.post('/api/whisper', upload.single('audio'), async (req, res) => {
   try {
-    const FormDataNode = (await import('formdata-node')).FormData;
-    const { Blob } = await import('buffer');
-    const form = new FormDataNode();
-    const blob = new Blob([req.file.buffer], { type: 'audio/webm' });
-    form.set('file', blob, 'audio.webm');
-    // Model is now controlled by the client; defaults to whisper-1 so existing
-    // app calls behave exactly as before. The test bench sends gpt-4o-mini-transcribe.
-    form.set('model', req.body.model || 'whisper-1');
-    form.set('temperature', '0');
-    if (req.body.language) form.set('language', req.body.language);
-    // Prompt forwarded as-is. The old Hebrew prompt-doubling is removed: it
-    // amplified prompt-echo (Whisper "transcribing" reference text that was
-    // never spoken), which inflated kriah scores unpredictably.
-    if (req.body.prompt) form.set('prompt', req.body.prompt);
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: form
-    });
-    const data = await response.json();
-    res.json(data);
+    const type = req.file.mimetype || 'audio/webm';
+    const name = req.file.originalname || 'audio.webm';
+    res.json(await transcribeAudio(req.file.buffer, type, name, req.body));
   } catch (err) {
     console.error("Whisper error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Homework site: transcribe a recording that's already in Firebase Storage.
+// The proxy downloads it itself, so the browser never has to (no bucket CORS setup needed).
+// Only files in this project's homework-audio folder are accepted.
+const HOMEWORK_AUDIO_PREFIX =
+  'https://firebasestorage.googleapis.com/v0/b/kitzur-app1.firebasestorage.app/o/homework-audio%2F';
+
+app.post('/api/whisper-from-url', async (req, res) => {
+  try {
+    const { url } = req.body || {};
+    if (typeof url !== 'string' || !url.startsWith(HOMEWORK_AUDIO_PREFIX)) {
+      return res.status(400).json({ error: 'Not a homework recording link.' });
+    }
+    const file = await fetch(url);
+    if (!file.ok) return res.status(502).json({ error: `Couldn't download the recording (${file.status}).` });
+    const buffer = Buffer.from(await file.arrayBuffer());
+    if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Recording is too large.' });
+    const type = (file.headers.get('content-type') || 'audio/webm').split(';')[0];
+    const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+    res.json(await transcribeAudio(buffer, type, `memo.${ext}`, req.body));
+  } catch (err) {
+    console.error("Whisper-from-url error:", err);
     res.status(500).json({ error: err.message });
   }
 });
