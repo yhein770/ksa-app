@@ -64,7 +64,7 @@ Drafting uses the `/api/claude` route on your Railway proxy. The model is set in
 
 **Classes** tab: make a class by pasting your students' emails, one per line ("Name, email" also works, or two columns copied from a spreadsheet). Students don't need to do anything.
 
-On **Submissions**, pick the assignment and the class, then **Export PDF**. The print window opens; choose **Save as PDF**. The report lists every student in the class (who submitted, when, their score on each question, the voice memo length, and your grade and note), with students who didn't submit marked in red. Tick **include transcripts** to add each student's voice memo transcript on the pages after.
+On **Submissions**, pick the assignment and the class, then **Download PDF**. The PDF downloads straight to your computer. It lists every student in the class (who submitted, when, their score on each question, the voice memo length, and your grade and note), with students who didn't submit marked in red. Tick **include transcripts** to add each student's voice memo transcript on the pages after.
 
 To grade a voice memo, open a student on the Submissions tab and fill in **Your grade** and **Note**. They save as you type and show on the PDF.
 

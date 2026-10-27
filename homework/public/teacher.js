@@ -6,7 +6,7 @@ import {
 import { scoreAnswers, questionCount } from "./assignments.js";
 import { listAssignments } from "./store.js";
 import { openBuilder } from "./builder.js";
-import { printReport } from "./report.js";
+import { downloadReport } from "./report.js";
 
 const CLASSES_COL = "homeworkClasses";
 
@@ -210,7 +210,7 @@ function render() {
         ${classes.map((c) => `<option value="${esc(c.code)}" ${c.code === classFilter ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
       </select>
       <button class="btn secondary" id="refresh">Refresh</button>
-      <button class="btn" id="pdf">Export PDF</button>
+      <button class="btn" id="pdf">Download PDF</button>
       <label class="check small"><input type="checkbox" id="withTr" ${withTranscripts ? "checked" : ""}> include transcripts</label>
       <button class="btn secondary" id="csv">Download CSV</button>
       <button class="btn secondary" id="copy">Copy student link</button>
@@ -237,10 +237,20 @@ function render() {
   app.querySelector("#refresh").onclick = load;
   app.querySelector("#csv").onclick = downloadCsv;
   app.querySelector("#withTr").onchange = (e) => { withTranscripts = e.target.checked; };
-  app.querySelector("#pdf").onclick = () => {
+  app.querySelector("#pdf").onclick = async (e) => {
+    const b = e.currentTarget;
     const c = classFilter === "all" ? null : classes.find((x) => x.code === classFilter);
-    printReport({ assignment: A, className: c?.name.replace(/ \(KSA\)$/, "") || "", roster: c ? c.roster : null,
-                  subs: visibleSubs(), includeTranscripts: withTranscripts });
+    b.disabled = true; b.textContent = "Making PDF…";
+    try {
+      await downloadReport({ assignment: A, className: c?.name.replace(/ \(KSA\)$/, "") || "", roster: c ? c.roster : null,
+                             subs: visibleSubs(), includeTranscripts: withTranscripts });
+      b.textContent = "Downloaded";
+    } catch (err) {
+      console.error(err);
+      b.textContent = "Download PDF";
+      alert(`Couldn't make the PDF: ${err.message}`);
+    }
+    setTimeout(() => { b.disabled = false; b.textContent = "Download PDF"; }, 1500);
   };
   app.querySelectorAll("[data-grade]").forEach((el) => (el.onchange = () => saveMark(el)));
   app.querySelector("#copy").onclick = async (e) => {

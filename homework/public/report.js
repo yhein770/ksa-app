@@ -1,5 +1,4 @@
-// Builds a printable class report and opens the browser's print dialog,
-// where "Save as PDF" turns it into a PDF.
+// Builds a class report and downloads it as a PDF, made right in the browser.
 import { esc, heb } from "./firebase.js";
 import { scoreAnswers, questionCount } from "./assignments.js";
 
@@ -8,7 +7,7 @@ const fmtDate = (t) =>
 const fmtLen = (s) => (s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "");
 
 // opts: { assignment, className, roster: [{email, name}] | null, subs, includeTranscripts }
-export function printReport({ assignment: A, className, roster, subs, includeTranscripts }) {
+function buildReport({ assignment: A, className, roster, subs, includeTranscripts }) {
   const byEmail = new Map(subs.map((s) => [s.email, s]));
   // With a class: every student on the roster, submitted or not. Without: everyone who submitted.
   let rows = roster
@@ -47,31 +46,28 @@ export function printReport({ assignment: A, className, roster, subs, includeTra
     : "";
 
   const title = `${A.title}${className ? ` - ${className}` : ""}`;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
-  <style>
-    @page { size: landscape; margin: 12mm; }
-    body { font: 11px/1.4 -apple-system, system-ui, "Segoe UI", Arial, sans-serif; color: #1d1d1b; margin: 0; }
-    h1 { font-size: 18px; margin: 0 0 2px; }
-    .sub { color: #6b6a66; margin-bottom: 10px; }
-    .stats { display: flex; gap: 22px; margin: 8px 0 12px; }
-    .stats b { font-size: 16px; display: block; }
-    table { width: 100%; border-collapse: collapse; font-size: inherit; }
-    th, td { border-bottom: 1px solid #ddd; padding: 5px 6px; text-align: left; vertical-align: top; }
-    th { background: #f3f1ec; font-weight: 600; font-size: 10px; }
-    tr { break-inside: avoid; }
-    .c { text-align: center; }
-    .em { color: #6b6a66; font-size: 9.5px; font-weight: normal; }
-    .ok { color: #2e7d4f; } .x { color: #b3261e; }
-    .no { color: #b3261e; font-weight: 600; }
-    tr.missing td { background: #fbf3f3; }
-    .pb { break-before: page; font-size: 15px; }
-    .tr { break-inside: avoid; margin-bottom: 12px; }
-    .tr h3 { font-size: 12px; margin: 0 0 3px; }
-    .tr p { margin: 0; white-space: pre-wrap; }
-    .he { font-family: "Frank Ruhl Libre", "Times New Roman", serif; }
-  </style></head><body>
+  const css = `
+    .rpt { width: 980px; padding: 4px; background: #fff; font: 11px/1.4 -apple-system, system-ui, "Segoe UI", Arial, sans-serif; color: #1d1d1b; }
+    .rpt h1 { font-size: 18px; margin: 0 0 2px; }
+    .rpt .rsub { color: #6b6a66; margin-bottom: 10px; }
+    .rpt .stats { display: flex; gap: 22px; margin: 8px 0 12px; }
+    .rpt .stats b { font-size: 16px; display: block; }
+    .rpt table { width: 100%; border-collapse: collapse; font-size: inherit; }
+    .rpt th, .rpt td { border-bottom: 1px solid #ddd; padding: 5px 6px; text-align: left; vertical-align: top; }
+    .rpt th { background: #f3f1ec; font-weight: 600; font-size: 10px; }
+    .rpt .c { text-align: center; }
+    .rpt .em { color: #6b6a66; font-size: 9.5px; font-weight: normal; }
+    .rpt .ok { color: #2e7d4f; } .rpt .x { color: #b3261e; }
+    .rpt .no { color: #b3261e; font-weight: 600; }
+    .rpt tr.missing td { background: #fbf3f3; }
+    .rpt .pb { page-break-before: always; font-size: 15px; padding-top: 4px; }
+    .rpt .tr { margin-bottom: 12px; }
+    .rpt .tr h3 { font-size: 12px; margin: 0 0 3px; }
+    .rpt .tr p { margin: 0; white-space: pre-wrap; }
+    .rpt .he { font-family: "Frank Ruhl Libre", "Times New Roman", serif; }`;
+  const body = `
     <h1>${esc(A.title)}</h1>
-    <div class="sub">${className ? `Class: ${esc(className)} · ` : ""}Report made ${esc(new Date().toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }))}</div>
+    <div class="rsub">${className ? `Class: ${esc(className)} · ` : ""}Report made ${esc(new Date().toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }))}</div>
     <div class="stats">
       <div><b>${done.length}${roster ? ` of ${rows.length}` : ""}</b>submitted</div>
       ${roster ? `<div><b>${rows.length - done.length}</b>not submitted</div>` : ""}
@@ -83,21 +79,38 @@ export function printReport({ assignment: A, className, roster, subs, includeTra
         <th class="c">Voice memo</th><th class="c">Grade</th><th>Note</th></tr></thead>
       <tbody>${tableRows || `<tr><td colspan="8">No students.</td></tr>`}</tbody>
     </table>
-    ${transcripts}
-  </body></html>`;
+    ${transcripts}`;
+  return { title, css, body };
+}
 
-  // Print from a hidden frame so no pop-up is needed.
-  const frame = document.createElement("iframe");
-  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
-  document.body.appendChild(frame);
-  const d = frame.contentDocument;
-  d.open(); d.write(html); d.close();
-  const oldTitle = document.title;
-  document.title = title; // Chrome uses this as the PDF file name
-  setTimeout(() => {
-    frame.contentWindow.focus();
-    frame.contentWindow.print();
-    setTimeout(() => { frame.remove(); document.title = oldTitle; }, 1000);
-  }, 300);
-  return html;
+let libPromise = null;
+function loadLib() {
+  if (window.html2pdf) return Promise.resolve();
+  libPromise ||= new Promise((resolve, reject) => {
+    const sc = document.createElement("script");
+    sc.src = "vendor/html2pdf.bundle.min.js";
+    sc.onload = resolve;
+    sc.onerror = () => { libPromise = null; reject(new Error("Couldn't load the PDF maker. Check your internet and try again.")); };
+    document.head.appendChild(sc);
+  });
+  return libPromise;
+}
+
+// Builds the report and downloads it as a PDF file.
+export async function downloadReport(opts) {
+  const { title, css, body } = buildReport(opts);
+  await loadLib();
+  const el = document.createElement("div");
+  el.className = "rpt";
+  el.innerHTML = `<style>${css}</style>${body}`;
+  const filename = `${title.replace(/:/g, "").replace(/[\\/*?"<>|]+/g, "-").replace(/\s+/g, " ").trim()}.pdf`;
+  await window.html2pdf().set({
+    margin: [8, 8, 8, 8],
+    filename,
+    image: { type: "jpeg", quality: 0.95 },
+    html2canvas: { scale: 2, backgroundColor: "#ffffff" },
+    jsPDF: { unit: "mm", format: "letter", orientation: "landscape" },
+    pagebreak: { mode: ["css", "legacy"], avoid: ["tr", ".tr", ".stats"] },
+  }).from(el).save();
+  return filename;
 }
