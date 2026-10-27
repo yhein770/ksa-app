@@ -60,8 +60,17 @@ Drafting uses the `/api/claude` route on your Railway proxy. The model is set in
 
 **Submissions** tab: pick the assignment and, optionally, a class to see who hasn't submitted. Click a student to see their answers (auto-checked), play the recording, and read the transcript. **Download CSV** gives you scores and transcripts for everyone.
 
+## Classes and the PDF report
+
+**Classes** tab: make a class by pasting your students' emails, one per line ("Name, email" also works, or two columns copied from a spreadsheet). Students don't need to do anything.
+
+On **Submissions**, pick the assignment and the class, then **Export PDF**. The print window opens; choose **Save as PDF**. The report lists every student in the class (who submitted, when, their score on each question, the voice memo length, and your grade and note), with students who didn't submit marked in red. Tick **include transcripts** to add each student's voice memo transcript on the pages after.
+
+To grade a voice memo, open a student on the Submissions tab and fill in **Your grade** and **Note**. They save as you type and show on the PDF.
+
 ## Where things are stored
 
+- Classes: Firestore collection `homeworkClasses`.
 - Assignments: Firestore collection `homeworkAssignments`. The original Kiddushin 29a assignment is built into `public/assignments.js`.
 - Answers and transcripts: Firestore collection `homeworkSubmissions`, one document per student per assignment.
 - Recordings: Storage folder `homework-audio/<assignment id>/<student email>`.

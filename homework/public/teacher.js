@@ -1,11 +1,14 @@
 import {
   auth, db, storage, signIn, signOut, onAuthStateChanged,
-  doc, getDoc, updateDoc, collection, query, where, getDocs, ref, getDownloadURL,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp, ref, getDownloadURL,
   SUBMISSIONS, transcribeFromUrl, esc, heb,
 } from "./firebase.js";
 import { scoreAnswers, questionCount } from "./assignments.js";
 import { listAssignments } from "./store.js";
 import { openBuilder } from "./builder.js";
+import { printReport } from "./report.js";
+
+const CLASSES_COL = "homeworkClasses";
 
 const app = document.getElementById("app");
 const params = new URLSearchParams(location.search);
@@ -15,6 +18,7 @@ let view = params.get("a") ? "submissions" : "assignments";
 let user = null, teacher = null;
 let classes = [];          // [{ code, name, students: [emails] }]
 let classFilter = "all";
+let withTranscripts = false;
 let subs = [];
 
 onAuthStateChanged(auth, async (u) => {
@@ -56,6 +60,7 @@ function tabsHtml() {
     <nav class="tabs">
       <button data-tab="assignments" class="${view === "assignments" ? "on" : ""}">Assignments</button>
       <button data-tab="submissions" class="${view === "submissions" ? "on" : ""}">Submissions</button>
+      <button data-tab="classes" class="${view === "classes" ? "on" : ""}">Classes</button>
     </nav>`;
 }
 
@@ -63,7 +68,9 @@ function wireTabs() {
   app.querySelector("#out").onclick = () => signOut(auth);
   app.querySelectorAll("[data-tab]").forEach((b) => (b.onclick = async () => {
     view = b.dataset.tab;
-    if (view === "submissions") await load(); else renderAssignments();
+    if (view === "submissions") await load();
+    else if (view === "classes") renderClasses();
+    else renderAssignments();
   }));
 }
 
@@ -125,12 +132,23 @@ function renderSignIn() {
 
 async function loadClasses() {
   classes = [];
+  try {
+    const snap = await getDocs(query(collection(db, CLASSES_COL), where("teacherEmail", "==", user.email)));
+    snap.docs.forEach((d) => {
+      const x = d.data();
+      const roster = x.roster || [];
+      classes.push({ code: `hw:${d.id}`, id: d.id, own: true, name: x.name || "Class",
+        students: roster.map((r) => r.email), roster });
+    });
+    classes.sort((a, b) => a.name.localeCompare(b.name));
+  } catch (e) { console.error(e); }
   for (const code of teacher.classes || []) {
     try {
       const s = await getDoc(doc(db, "classes", code));
       if (s.exists()) {
         const d = s.data();
-        classes.push({ code, name: d.name || code, students: (d.students || []).map((e) => e.toLowerCase()) });
+        const students = (d.students || []).map((e) => e.toLowerCase());
+        classes.push({ code, name: `${d.name || code} (KSA)`, students, roster: students.map((email) => ({ email, name: "" })) });
       }
     } catch (e) { console.error(e); }
   }
@@ -176,7 +194,7 @@ function render() {
     missingHtml = `
       <div class="card">
         <h2>Not submitted yet (${missing.length})</h2>
-        ${missing.length ? `<p class="small" style="margin:0">${missing.map(esc).join(" · ")}</p>` : `<p class="muted small" style="margin:0">Everyone in this class has submitted.</p>`}
+        ${missing.length ? `<p class="small" style="margin:0">${missing.map((e) => esc(nameFor(c, e))).join(" · ")}</p>` : `<p class="muted small" style="margin:0">Everyone in this class has submitted.</p>`}
       </div>`;
   }
 
@@ -192,6 +210,8 @@ function render() {
         ${classes.map((c) => `<option value="${esc(c.code)}" ${c.code === classFilter ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
       </select>
       <button class="btn secondary" id="refresh">Refresh</button>
+      <button class="btn" id="pdf">Export PDF</button>
+      <label class="check small"><input type="checkbox" id="withTr" ${withTranscripts ? "checked" : ""}> include transcripts</label>
       <button class="btn secondary" id="csv">Download CSV</button>
       <button class="btn secondary" id="copy">Copy student link</button>
     </div>
@@ -216,6 +236,13 @@ function render() {
   app.querySelector("#cls").onchange = (e) => { classFilter = e.target.value; render(); };
   app.querySelector("#refresh").onclick = load;
   app.querySelector("#csv").onclick = downloadCsv;
+  app.querySelector("#withTr").onchange = (e) => { withTranscripts = e.target.checked; };
+  app.querySelector("#pdf").onclick = () => {
+    const c = classFilter === "all" ? null : classes.find((x) => x.code === classFilter);
+    printReport({ assignment: A, className: c?.name.replace(/ \(KSA\)$/, "") || "", roster: c ? c.roster : null,
+                  subs: visibleSubs(), includeTranscripts: withTranscripts });
+  };
+  app.querySelectorAll("[data-grade]").forEach((el) => (el.onchange = () => saveMark(el)));
   app.querySelector("#copy").onclick = async (e) => {
     try { await navigator.clipboard.writeText(studentLink); e.target.textContent = "Link copied"; }
     catch { prompt("Copy this link:", studentLink); }
@@ -244,11 +271,16 @@ function subHtml(s) {
     <details class="sub" data-id="${esc(s.id)}">
       <summary>
         <div><div class="name">${esc(s.name)}</div><div class="email">${esc(s.email)}</div></div>
-        <span class="pill ${cls}">${sc.correct} / ${sc.total}</span>
+        <span class="pill ${cls}">${sc.correct} / ${sc.total}${s.teacherGrade ? ` · ${esc(s.teacherGrade)}` : ""}</span>
         ${statusPill(s)}
         <span class="muted small">${esc(when)}</span>
       </summary>
       <div class="body">
+        <div class="mark-row">
+          <label class="field narrow"><span>Your grade</span><input data-grade="teacherGrade" data-id="${esc(s.id)}" value="${esc(s.teacherGrade || "")}" placeholder="e.g. 9/10, A-, ✓+"></label>
+          <label class="field" style="flex:1"><span>Note (shows on the PDF)</span><input data-grade="teacherNote" data-id="${esc(s.id)}" value="${esc(s.teacherNote || "")}"></label>
+          <span class="muted small saved" data-saved="${esc(s.id)}"></span>
+        </div>
         <div class="ans">${answersHtml(s, sc)}</div>
         <h3 style="font-size:16px;margin:16px 0 6px">Voice memo${s.audioSeconds ? ` <span class="muted small">(${Math.floor(s.audioSeconds / 60)}:${String(s.audioSeconds % 60).padStart(2, "0")})</span>` : ""}</h3>
         ${s.audioPath ? `<div class="audioSlot muted small">Loading audio…</div>` : `<p class="muted small">No recording.</p>`}
@@ -344,4 +376,116 @@ function downloadCsv() {
   a.download = `${A.id}-submissions.csv`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+
+// ---------- teacher grade and note ----------
+async function saveMark(el) {
+  const s = subs.find((x) => x.id === el.dataset.id);
+  const field = el.dataset.grade;
+  const val = el.value.trim();
+  const tag = app.querySelector(`[data-saved="${CSS.escape(el.dataset.id)}"]`);
+  try {
+    await updateDoc(doc(db, SUBMISSIONS, s.id), { [field]: val });
+    s[field] = val;
+    if (tag) tag.textContent = "Saved";
+  } catch (e) {
+    console.error(e);
+    if (tag) tag.textContent = `Didn't save: ${e.message}`;
+  }
+}
+
+function nameFor(c, email) {
+  const r = c?.roster?.find((x) => x.email === email);
+  return r?.name ? `${r.name} (${email})` : email;
+}
+
+// ---------- classes ----------
+// One student per line: "email", "Name, email", or copied from a spreadsheet (Name<tab>email).
+function parseRoster(text) {
+  const out = [], seen = new Set();
+  for (const line of String(text || "").split("\n")) {
+    const m = line.match(/[^\s,;<>"']+@[^\s,;<>"']+\.[^\s,;<>"']+/);
+    if (!m) continue;
+    const email = m[0].toLowerCase();
+    if (seen.has(email)) continue;
+    seen.add(email);
+    const name = line.replace(m[0], "").replace(/[<>"\t,;]+/g, " ").replace(/\s+/g, " ").trim();
+    out.push({ email, name });
+  }
+  return out;
+}
+
+let editingClass = null; // { id?, name, text }
+
+function renderClasses() {
+  resetHandlers();
+  view = "classes";
+  const mine = classes.filter((c) => c.own);
+  const ksa = classes.filter((c) => !c.own);
+  app.innerHTML = `
+    ${tabsHtml()}
+    ${editingClass ? `
+      <div class="card">
+        <h2>${editingClass.id ? "Edit class" : "New class"}</h2>
+        <label class="field"><span>Class name</span><input id="cname" value="${esc(editingClass.name)}" placeholder="Kiddushin, 10th grade"></label>
+        <label class="field"><span>Students, one per line. Just the email works, or "Name, email". You can paste two columns straight from a spreadsheet.</span>
+          <textarea id="croster" rows="12" placeholder="Moshe Cohen, mcohen@rasg.org">${esc(editingClass.text)}</textarea></label>
+        <p class="muted small" id="ccount"></p>
+        <div class="row">
+          <button class="btn" id="csave">Save class</button>
+          <button class="btn ghost" id="ccancel">Cancel</button>
+          ${editingClass.id ? `<button class="btn ghost danger" id="cdel">Delete class</button>` : ""}
+        </div>
+        <div id="cmsg"></div>
+      </div>` : `
+      <div class="toolbar"><button class="btn" id="cnew">New class</button></div>
+      <p class="muted small">A class is just a list of students. Pick it on the Submissions tab to see who hasn't submitted and to export that class's PDF. Students don't need to do anything.</p>
+      <div class="alist">
+        ${mine.map((c) => `
+          <div class="card item">
+            <div><h3>${esc(c.name)}</h3><div class="muted small">${c.roster.length} students</div></div>
+            <div class="row"><button class="btn ghost tiny" data-cedit="${esc(c.id)}">Edit</button></div>
+          </div>`).join("") || `<div class="card muted">No classes yet.</div>`}
+        ${ksa.length ? `<p class="muted small">From the KSA app (edit those in the KSA app): ${ksa.map((c) => esc(c.name)).join(", ")}</p>` : ""}
+      </div>`}`;
+  wireTabs();
+  if (editingClass) {
+    const ta = app.querySelector("#croster");
+    const count = () => { app.querySelector("#ccount").textContent = `${parseRoster(ta.value).length} students found.`; };
+    ta.oninput = count; count();
+    app.querySelector("#ccancel").onclick = () => { editingClass = null; renderClasses(); };
+    app.querySelector("#csave").onclick = saveClass;
+    const del = app.querySelector("#cdel");
+    if (del) del.onclick = async () => {
+      if (!confirm("Delete this class? Student submissions are not affected.")) return;
+      await deleteDoc(doc(db, CLASSES_COL, editingClass.id));
+      editingClass = null; await loadClasses(); renderClasses();
+    };
+  } else {
+    app.querySelector("#cnew").onclick = () => { editingClass = { name: "", text: "" }; renderClasses(); };
+    app.querySelectorAll("[data-cedit]").forEach((b) => (b.onclick = () => {
+      const c = classes.find((x) => x.id === b.dataset.cedit);
+      editingClass = { id: c.id, name: c.name, text: c.roster.map((r) => (r.name ? `${r.name}, ${r.email}` : r.email)).join("\n") };
+      renderClasses();
+    }));
+  }
+}
+
+async function saveClass() {
+  const name = app.querySelector("#cname").value.trim();
+  const roster = parseRoster(app.querySelector("#croster").value);
+  const msg = app.querySelector("#cmsg");
+  if (!name) { msg.innerHTML = `<div class="notice warn">Give the class a name.</div>`; return; }
+  if (!roster.length) { msg.innerHTML = `<div class="notice warn">No email addresses found. Put one student per line.</div>`; return; }
+  const id = editingClass.id || `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30)}-${Math.random().toString(36).slice(2, 6)}`;
+  try {
+    await setDoc(doc(db, CLASSES_COL, id), { name, roster, teacherEmail: user.email, updatedAt: serverTimestamp() });
+    editingClass = null;
+    await loadClasses();
+    classFilter = `hw:${id}`;
+    renderClasses();
+  } catch (e) {
+    msg.innerHTML = `<div class="notice bad">Couldn't save: ${esc(e.message)}</div>`;
+  }
 }

@@ -164,3 +164,7 @@ textarea { resize: vertical; line-height: 1.5; }
   .alist .item { grid-template-columns: 1fr; }
   .alist .item .row { justify-content: flex-start; }
 }
+
+.mark-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 8px; }
+.mark-row .field { margin: 8px 0 0; }
+.mark-row .saved { padding-bottom: 12px; }
