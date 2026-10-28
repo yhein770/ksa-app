@@ -3,7 +3,7 @@ import { esc, heb } from "./firebase.js";
 import { renumber, checkAssignment, questionCount } from "./assignments.js";
 import { draftAssignment, reviseAssignment, draftFromPrompt } from "./generator.js";
 import { saveAssignment, deleteAssignment, newId } from "./store.js";
-import { loadSefaria, bareHebrew } from "./sefaria.js";
+import { loadSefaria, bareHebrew, isLineRef } from "./sefaria.js";
 
 const BLANK_Q = {
   select: () => ({ type: "select", prompt: "", options: ["", ""], answer: "" }),
@@ -43,13 +43,13 @@ export function openBuilder(opts) {
     return `
       <div class="picker">
         <div class="row">
-          <input data-pk="ref" value="${esc(picker.ref)}" placeholder="e.g. Kiddushin 29a" style="max-width:260px">
+          <input data-pk="ref" value="${esc(picker.ref)}" placeholder="Kiddushin 29b:2-4, a whole daf, or a Sefaria link" style="max-width:360px">
           <button class="btn secondary tiny" data-act="sload" ${picker.busy ? "disabled" : ""}>${picker.busy ? "Loading…" : "Get text from Sefaria"}</button>
-          <span class="muted small">Brings in the Hebrew and the English, with the literal translation in bold.</span>
+          <span class="muted small">Brings in the Hebrew and the English, with the literal translation in bold. For just a few lines, add them after a colon or paste the link from Sefaria.</span>
         </div>
         ${picker.error ? `<div class="notice bad">${esc(picker.error)}</div>` : ""}
         ${picker.segs ? `
-          <p class="small muted" style="margin:10px 0 4px">Tick the pieces this assignment covers, in order:</p>
+          <p class="small muted" style="margin:10px 0 4px">Tick the pieces this assignment covers, in order. You can trim any piece in the text boxes afterward.</p>
           <div class="segs">${picker.segs.map((sg, i) => `
             <label class="seg"><input type="checkbox" data-seg="${i}" ${sg.checked ? "checked" : ""}>
               <span><span class="he">${esc(sg.he.slice(0, 90))}${sg.he.length > 90 ? "…" : ""}</span><br>
@@ -65,9 +65,10 @@ export function openBuilder(opts) {
       const segs = await loadSefaria(picker.ref);
       // Pre-tick pieces that match Hebrew already in this assignment.
       const have = (a?.gemara || []).map(bareHebrew).filter(Boolean);
+      const lines = isLineRef(picker.ref); // specific lines asked for: tick them all
       picker.segs = segs.map((sg) => {
         const b = bareHebrew(sg.he);
-        return { ...sg, checked: !!b && have.some((h) => h.includes(b) || b.includes(h)) };
+        return { ...sg, checked: lines || (!!b && have.some((h) => h.includes(b) || b.includes(h))) };
       });
     } catch (e) {
       picker.error = e.message; picker.segs = null;

@@ -29,9 +29,18 @@ function englishWithBold(html) {
   return out.replace(/\*\*(\s*)\*\*/g, "$1").replace(/\s+/g, " ").trim();
 }
 
-// "Kiddushin 29a" -> "Kiddushin.29a"
+// Accepts "Kiddushin 29a", "Kiddushin 29b:2-4", "Kiddushin 29a:30-29b:2",
+// or a Sefaria link like https://www.sefaria.org/Kiddushin.29b.2-4?lang=bi
 export function sefariaRef(input) {
-  return String(input || "").trim().replace(/\s+/g, " ").replace(/ (?=\d)/, ".").replace(/ /g, "_");
+  let s = String(input || "").trim();
+  const m = s.match(/sefaria\.org\/([^?#\s]+)/i);
+  if (m) s = decodeURIComponent(m[1]);
+  return s.replace(/\s+/g, " ").replace(/ (?=\d)/, ".").replace(/:/g, ".").replace(/ /g, "_");
+}
+
+// True when the reference points at specific lines, not a whole daf.
+export function isLineRef(input) {
+  return /\d+[ab]?\.\d/.test(sefariaRef(input));
 }
 
 // Returns [{ he, en }] for each segment of the ref.
