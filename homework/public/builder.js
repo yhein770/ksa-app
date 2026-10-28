@@ -1,7 +1,7 @@
 // Teacher-side assignment builder: paste a Gemara, Claude drafts it, you edit and publish.
 import { esc, heb } from "./firebase.js";
 import { renumber, checkAssignment, questionCount } from "./assignments.js";
-import { draftAssignment, reviseAssignment } from "./generator.js";
+import { draftAssignment, reviseAssignment, draftFromPrompt } from "./generator.js";
 import { saveAssignment, deleteAssignment, newId } from "./store.js";
 import { loadSefaria, bareHebrew } from "./sefaria.js";
 
@@ -32,6 +32,7 @@ export function openBuilder(opts) {
   }
   let form = {
     title: "", gemara: "", translation: "", focus: "",
+    mode: "form", prompt: "",
     level: "easy", questionCount: 6, types: ["select", "order", "mcq", "dialogue"], voice: true, voiceFirst: true, voiceMinutes: 4,
   };
   let busy = "", message = null, dirty = false;
@@ -91,12 +92,39 @@ export function openBuilder(opts) {
   }
 
   // ---------- step 1: the request form ----------
+  function promptFormHtml() {
+    return `
+      <div class="card">
+        <label class="field"><span>Your prompt</span>
+          <textarea data-f="prompt" rows="12" placeholder="Write it the way you'd ask Claude. For example: a short homework for 10th grade on Kiddushin 29a about pidyon haben, voice memo first where they read and explain each line, then 6 easy questions on who has to redeem and why the last line isn't circular.
+
+Or paste an assignment you already have, from a Claude chat or a document, and it will be turned into an online one.">${esc(form.prompt)}</textarea></label>
+        <div class="field"><span>The Gemara text <span class="muted small">(optional here; you can also add it after)</span></span>${pickerHtml()}</div>
+        <details ${form.gemara || form.translation ? "open" : ""}><summary class="small muted" style="cursor:pointer">Paste the text yourself</summary>
+          <label class="field"><span>Hebrew (blank line between pieces)</span>
+            <textarea data-f="gemara" rows="6" dir="rtl" class="he-input">${esc(form.gemara)}</textarea></label>
+          <label class="field"><span>English (blank line between pieces)</span>
+            <textarea data-f="translation" rows="5">${esc(form.translation)}</textarea></label>
+        </details>
+        ${message ? `<div class="notice ${message.kind}">${esc(message.text)}</div>` : ""}
+        <div class="row" style="margin-top:12px">
+          <button class="btn" data-act="pdraft" ${busy ? "disabled" : ""}>${busy || "Make it with Claude"}</button>
+        </div>
+        ${busy ? `<p class="muted small">This usually takes 30 to 90 seconds.</p>` : ""}
+      </div>`;
+  }
+
   function renderForm() {
     root.innerHTML = `
       <header class="top">
         <h1>New assignment</h1>
         <div class="who"><button class="btn ghost" data-act="exit">Back to assignments</button></div>
       </header>
+      <nav class="tabs">
+        <button data-act="mode" data-m="form" class="${form.mode === "form" ? "on" : ""}">Fill in a form</button>
+        <button data-act="mode" data-m="prompt" class="${form.mode === "prompt" ? "on" : ""}">Write my own prompt</button>
+      </nav>
+      ${form.mode === "prompt" ? promptFormHtml() : `
       <div class="card">
         <label class="field"><span>Title <span class="muted small">(optional, Claude will suggest one)</span></span>
           <input data-f="title" value="${esc(form.title)}" placeholder="Kiddushin 29a: Pidyon HaBen"></label>
@@ -135,7 +163,7 @@ export function openBuilder(opts) {
           <button class="btn ghost" data-act="scratch" ${busy ? "disabled" : ""}>Start from scratch instead</button>
         </div>
         ${busy ? `<p class="muted small">This usually takes 30 to 60 seconds.</p>` : ""}
-      </div>`;
+      </div>`}`;
   }
 
   // ---------- step 2: the editor ----------
@@ -362,6 +390,26 @@ export function openBuilder(opts) {
             parts: [{ title: "Part A", questions: [] }], voice: null, status: "draft",
             sourceText: form.gemara, translation: form.translation, focus: form.focus };
       dirty = true; message = null; return render();
+    }
+    if (act === "mode") { form.mode = b.dataset.m; message = null; return render(); }
+    if (act === "pdraft") {
+      if (!form.prompt.trim()) { message = { kind: "warn", text: "Write your prompt first." }; return render(); }
+      busy = "Claude is making it…"; message = null; render();
+      try {
+        const d = await draftFromPrompt({ prompt: form.prompt, gemara: form.gemara, translation: form.translation });
+        a = { ...d, status: "draft", focus: form.prompt,
+              gemara: form.gemara.trim() ? paras(form.gemara) : (d.gemara || []),
+              english: form.translation.trim() ? paras(form.translation) : (d.english || []) };
+        a.sourceText = a.gemara.join("\n\n"); a.translation = a.english.join("\n\n");
+        dirty = true;
+        message = { kind: "good", text: a.gemara.length
+          ? "Here's the draft. Read every question, fix anything, then save or publish."
+          : "Here's the draft. Add the Gemara text under Basics (Get text from Sefaria), then save or publish." };
+      } catch (err) {
+        console.error(err);
+        message = { kind: "bad", text: `Couldn't make it: ${err.message}` };
+      }
+      busy = ""; return render();
     }
     if (act === "draft") {
       if (!form.gemara.trim()) { message = { kind: "warn", text: "Paste the Gemara text first." }; return render(); }

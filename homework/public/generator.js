@@ -50,7 +50,7 @@ Return ONLY a JSON object, no other text, in exactly this shape:
 }
 Set "voice" to null if no voice memo is requested.`;
 
-async function callClaude(userText, maxTokens = 8000) {
+async function callClaude(userText, maxTokens = 20000) {
   const r = await fetch(CLAUDE_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -66,7 +66,7 @@ async function callClaude(userText, maxTokens = 8000) {
   if (d?.error) throw new Error(d.error.message || JSON.stringify(d.error));
   const text = (d?.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
   if (!text) throw new Error("Claude returned nothing. Try again.");
-  if (d.stop_reason === "max_tokens") throw new Error("Claude's draft got cut off. Ask for fewer questions and try again.");
+  if (d.stop_reason === "max_tokens") throw new Error("Claude's draft was too long and got cut off. Try again, or ask for fewer questions.");
   return text;
 }
 
@@ -119,4 +119,27 @@ export async function reviseAssignment(current, gemaraText, request) {
   ].join("\n\n");
   const raw = parseJson(await callClaude(msg));
   return normalizeDraft(raw);
+}
+
+// Teacher writes the request in their own words, or pastes an assignment they already have.
+// input: { prompt, gemara, translation }
+export async function draftFromPrompt(input) {
+  const msg = [
+    input.gemara?.trim() ? `GEMARA TEXT:\n${input.gemara.trim()}` : "",
+    input.translation?.trim() ? `TRANSLATION:\n${input.translation.trim()}` : "",
+    `THE TEACHER'S REQUEST, IN THEIR OWN WORDS:\n${input.prompt.trim()}`,
+    `HOW TO HANDLE IT:
+- Follow the teacher's request. It overrides the defaults above where they conflict (level, number of questions, voice memo or not, and so on).
+- If the request contains an assignment the teacher already wrote (for example pasted from a chat or a document), convert it faithfully: keep their questions, wording, answers and order, and only change what the format requires.
+- The site has four question types (select, order, mcq, dialogue) plus the voice memo. Open-ended written questions aren't supported. Turn an open-ended "explain" question into a voice memo checklist item; turn a question with one short right answer into a select or mcq question.
+- If the teacher asks for the voice memo before the questions, set "voiceFirst": true at the top level.
+- If the Hebrew/Aramaic text of the Gemara appears in the teacher's message (and no GEMARA TEXT was given above), add "gemara": [pieces] and, if there is English for it, "english": [pieces, same count], copying ONLY text that is actually in the message. Never write the Gemara text from memory. If the text isn't in the message, leave both out; the teacher will add it.
+- If the teacher pasted English with the literal translation in bold, keep the bold as **double asterisks**.`,
+  ].filter(Boolean).join("\n\n");
+  const raw = parseJson(await callClaude(msg));
+  const out = normalizeDraft(raw);
+  const strs = (x) => (Array.isArray(x) ? x.map((t) => String(t).trim()).filter(Boolean) : []);
+  if (strs(raw.gemara).length) out.gemara = strs(raw.gemara);
+  if (strs(raw.english).length) out.english = strs(raw.english);
+  return out;
 }
