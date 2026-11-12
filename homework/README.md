@@ -52,6 +52,8 @@ Or use **Write my own prompt** at the top of the New assignment page: type what 
 5. **Preview as a student** opens it the way students see it. Students can't open it until you publish.
 6. **Publish**, then **Copy student link** and post that one link in Google Classroom.
 
+Besides the checked question types (word bank, put in order, multiple choice), a part can hold a **Reading** (text students read at that spot, such as background you want explained before the questions) and a **Typed answer** (students type a sentence or two; it isn't checked automatically, and your answer key shows next to each student's answer on the Submissions tab). A word bank can be just YES and NO. The Gemara text is optional, for assignments that explain everything themselves.
+
 Every assignment, including the built-in Kiddushin one, has an **Edit** button. In the editor, the voice memo section has a checkbox for whether students do it first (read and explain the Gemara, then the questions) or last.
 
 Assignments live in the database, so you never touch code to add one. Multiple-choice answers are shuffled automatically so the correct letter is random. You can edit a published assignment any time. **Unpublish** hides it again.

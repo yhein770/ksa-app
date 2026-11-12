@@ -105,7 +105,7 @@ export function scoreAnswers(assignment, answers) {
   const perQuestion = {};
   for (const part of assignment.parts) {
     for (const q of part.questions) {
-      if (!q.id) continue;
+      if (!q.id || q.type === "written") continue; // typed answers are read by the teacher, not auto-checked
       total++;
       const a = answers?.[q.id];
       let ok = false;
@@ -123,6 +123,14 @@ export function scoreAnswers(assignment, answers) {
 export function questionCount(a) {
   return (a.parts || []).reduce((t, p) => t + (p.questions || []).filter((q) => q.id).length, 0);
 }
+
+// Questions that are checked automatically (everything except typed answers).
+export function scoredCount(a) {
+  return (a.parts || []).reduce((t, p) => t + (p.questions || []).filter((q) => q.id && q.type !== "written").length, 0);
+}
+
+// Items that are shown to the student but aren't questions.
+export const isInfo = (q) => q.type === "dialogue" || q.type === "reading";
 
 function shuffle(arr) {
   const a = [...arr];
@@ -145,6 +153,8 @@ export function normalizeDraft(raw) {
       if (q.type === "dialogue") {
         return { type: "dialogue", lines: (q.lines || []).map(([w, t]) => [noDash(w), noDash(t)]) };
       }
+      if (q.type === "reading") return { type: "reading", text: noDash(q.text) };
+      if (q.type === "written") return { type: "written", prompt: noDash(q.prompt), sample: noDash(q.sample) };
       if (q.type === "mcq") {
         const opts = (q.options || []).map(noDash);
         const right = opts[q.answerIndex ?? q.answer ?? 0];
@@ -181,7 +191,7 @@ export function normalizeDraft(raw) {
 export function renumber(a) {
   let n = 0;
   for (const p of a.parts || []) for (const q of p.questions || []) {
-    if (q.type === "dialogue") delete q.id;
+    if (isInfo(q)) delete q.id;
     else q.id = `q${++n}`;
   }
   return a;
@@ -191,16 +201,17 @@ export function renumber(a) {
 export function checkAssignment(a) {
   const errors = [], warnings = [];
   if (!a.title?.trim()) errors.push("The assignment needs a title.");
-  if (!a.gemara?.length) errors.push("The assignment needs the Gemara text.");
   if (!questionCount(a) && !a.voice) errors.push("The assignment has no questions and no voice memo.");
   let n = 0;
   for (const p of a.parts || []) for (const q of p.questions || []) {
-    if (q.type === "dialogue") continue;
+    if (q.type === "reading" && !q.text?.trim()) warnings.push("One of the readings is empty.");
+    if (isInfo(q)) continue;
     n++;
     const label = `Question ${n}`;
     if (!q.prompt?.trim()) errors.push(`${label} has no question text.`);
     if (q.type === "select") {
       if (!q.options?.includes(q.answer)) errors.push(`${label}: the correct answer isn't one of the choices.`);
+      if ((q.options || []).length < 2) errors.push(`${label} needs at least two choices.`);
       if (new Set(q.options).size !== q.options?.length) warnings.push(`${label} has the same choice twice.`);
     }
     if (q.type === "mcq") {
