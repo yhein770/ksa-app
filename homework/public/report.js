@@ -1,6 +1,6 @@
 // Builds a class report and downloads it as a PDF, made right in the browser.
 import { esc, heb } from "./firebase.js";
-import { scoreAnswers, questionCount } from "./assignments.js";
+import { scoreAnswers, scoredCount } from "./assignments.js";
 
 const fmtDate = (t) =>
   t?.toDate ? t.toDate().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
@@ -15,9 +15,15 @@ function buildReport({ assignment: A, className, roster, subs, includeTranscript
     : subs.map((s) => ({ email: s.email, name: s.name || s.email, sub: s }));
   rows.sort((a, b) => a.name.localeCompare(b.name));
 
-  const qs = [];
-  for (const p of A.parts || []) for (const q of p.questions || []) if (q.id) qs.push(q.id);
-  const total = questionCount(A);
+  // Auto-checked questions get a column each. Typed answers are listed with the transcripts instead.
+  const qs = [], qNum = {}, typed = [];
+  let qn = 0;
+  for (const p of A.parts || []) for (const q of p.questions || []) {
+    if (!q.id) continue;
+    qNum[q.id] = ++qn;
+    if (q.type === "written") typed.push(q); else qs.push(q.id);
+  }
+  const total = scoredCount(A);
   const showQs = qs.length > 0 && qs.length <= 12;
   const done = rows.filter((r) => r.sub);
   const scores = done.map((r) => scoreAnswers(A, r.sub.answers).correct);
@@ -39,10 +45,12 @@ function buildReport({ assignment: A, className, roster, subs, includeTranscript
       <td>${esc(r.sub.teacherNote || "")}</td></tr>`;
   }).join("");
 
+  const typedHtml = (r) => typed.map((q) => `<p><b>Q${qNum[q.id]} (typed):</b> ${r.sub.answers?.[q.id] ? heb(String(r.sub.answers[q.id])) : "<i>No answer.</i>"}</p>`).join("");
+  const memoHtml = (r) => (A.voice ? `<p>${r.sub.transcriptStatus === "done" ? heb(r.sub.transcript) : "<i>No transcript.</i>"}</p>` : "");
   const transcripts = includeTranscripts
-    ? `<h2 class="pb">Voice memo transcripts</h2>${done.map((r) => `
+    ? `<h2 class="pb">${typed.length ? "Typed answers and voice memo transcripts" : "Voice memo transcripts"}</h2>${done.map((r) => `
         <div class="tr"><h3>${esc(r.name)} <span class="em">${esc(fmtLen(r.sub.audioSeconds))}</span></h3>
-        <p>${r.sub.transcriptStatus === "done" ? heb(r.sub.transcript) : "<i>No transcript.</i>"}</p></div>`).join("") || "<p>No submissions.</p>"}`
+        ${typedHtml(r)}${memoHtml(r)}</div>`).join("") || "<p>No submissions.</p>"}`
     : "";
 
   const title = `${A.title}${className ? ` - ${className}` : ""}`;
@@ -75,7 +83,7 @@ function buildReport({ assignment: A, className, roster, subs, includeTranscript
     </div>
     <table>
       <thead><tr><th>#</th><th>Student</th><th>Submitted</th><th class="c">Score</th>
-        ${showQs ? qs.map((_, i) => `<th class="c">Q${i + 1}</th>`).join("") : ""}
+        ${showQs ? qs.map((id) => `<th class="c">Q${qNum[id]}</th>`).join("") : ""}
         <th class="c">Voice memo</th><th class="c">Grade</th><th>Note</th></tr></thead>
       <tbody>${tableRows || `<tr><td colspan="8">No students.</td></tr>`}</tbody>
     </table>

@@ -1,17 +1,19 @@
 // Teacher-side assignment builder: paste a Gemara, Claude drafts it, you edit and publish.
 import { esc, heb } from "./firebase.js";
-import { renumber, checkAssignment, questionCount } from "./assignments.js";
+import { renumber, checkAssignment, questionCount, isInfo } from "./assignments.js";
 import { draftAssignment, reviseAssignment, draftFromPrompt } from "./generator.js";
 import { saveAssignment, deleteAssignment, newId } from "./store.js";
-import { loadSefaria, bareHebrew } from "./sefaria.js";
+import { loadSefaria, bareHebrew, isLineRef } from "./sefaria.js";
 
 const BLANK_Q = {
   select: () => ({ type: "select", prompt: "", options: ["", ""], answer: "" }),
   order: () => ({ type: "order", prompt: "", joiner: "because", answer: ["", "", ""], options: [] }),
   mcq: () => ({ type: "mcq", prompt: "", options: ["", "", "", ""], answer: -1 }),
   dialogue: () => ({ type: "dialogue", lines: [["Teacher", ""], ["Student", ""]] }),
+  reading: () => ({ type: "reading", text: "" }),
+  written: () => ({ type: "written", prompt: "", sample: "" }),
 };
-const TYPE_NAMES = { select: "Word bank", order: "Put in order", mcq: "Multiple choice", dialogue: "Everyday example" };
+const TYPE_NAMES = { select: "Word bank", order: "Put in order", mcq: "Multiple choice", written: "Typed answer", reading: "Reading", dialogue: "Everyday example" };
 
 function shuffle(arr) {
   const a = [...arr];
@@ -33,7 +35,7 @@ export function openBuilder(opts) {
   let form = {
     title: "", gemara: "", translation: "", focus: "",
     mode: "form", prompt: "",
-    level: "easy", questionCount: 6, types: ["select", "order", "mcq", "dialogue"], voice: true, voiceFirst: true, voiceMinutes: 4,
+    level: "easy", questionCount: 6, types: ["select", "order", "mcq", "dialogue"], // typed answers and readings are opt-in voice: true, voiceFirst: true, voiceMinutes: 4,
   };
   let busy = "", message = null, dirty = false;
   let picker = { ref: "", busy: false, error: "", segs: null };
@@ -43,13 +45,13 @@ export function openBuilder(opts) {
     return `
       <div class="picker">
         <div class="row">
-          <input data-pk="ref" value="${esc(picker.ref)}" placeholder="e.g. Kiddushin 29a" style="max-width:260px">
+          <input data-pk="ref" value="${esc(picker.ref)}" placeholder="Kiddushin 29b:2-4, a whole daf, or a Sefaria link" style="max-width:360px">
           <button class="btn secondary tiny" data-act="sload" ${picker.busy ? "disabled" : ""}>${picker.busy ? "Loading…" : "Get text from Sefaria"}</button>
-          <span class="muted small">Brings in the Hebrew and the English, with the literal translation in bold.</span>
+          <span class="muted small">Brings in the Hebrew and the English, with the literal translation in bold. For just a few lines, add them after a colon or paste the link from Sefaria.</span>
         </div>
         ${picker.error ? `<div class="notice bad">${esc(picker.error)}</div>` : ""}
         ${picker.segs ? `
-          <p class="small muted" style="margin:10px 0 4px">Tick the pieces this assignment covers, in order:</p>
+          <p class="small muted" style="margin:10px 0 4px">Tick the pieces this assignment covers, in order. You can trim any piece in the text boxes afterward.</p>
           <div class="segs">${picker.segs.map((sg, i) => `
             <label class="seg"><input type="checkbox" data-seg="${i}" ${sg.checked ? "checked" : ""}>
               <span><span class="he">${esc(sg.he.slice(0, 90))}${sg.he.length > 90 ? "…" : ""}</span><br>
@@ -65,9 +67,10 @@ export function openBuilder(opts) {
       const segs = await loadSefaria(picker.ref);
       // Pre-tick pieces that match Hebrew already in this assignment.
       const have = (a?.gemara || []).map(bareHebrew).filter(Boolean);
+      const lines = isLineRef(picker.ref); // specific lines asked for: tick them all
       picker.segs = segs.map((sg) => {
         const b = bareHebrew(sg.he);
-        return { ...sg, checked: !!b && have.some((h) => h.includes(b) || b.includes(h)) };
+        return { ...sg, checked: lines || (!!b && have.some((h) => h.includes(b) || b.includes(h))) };
       });
     } catch (e) {
       picker.error = e.message; picker.segs = null;
@@ -181,6 +184,11 @@ Or paste an assignment you already have, from a Claude chat or a document, and i
         <label class="field"><span>Example (one line each, "Speaker: what they say")</span>
           <textarea ${P} data-k="lines" rows="4">${esc(q.lines.map(([w, t]) => `${w}: ${t}`).join("\n"))}</textarea></label></div>`;
     }
+    if (q.type === "reading") {
+      return `<div class="qedit">${ctrl}
+        <label class="field"><span>Text students read here (not a question). Leave a blank line between paragraphs.</span>
+          <textarea ${P} data-k="text" rows="${Math.min(14, Math.max(4, Math.ceil((q.text || "").length / 90)))}">${esc(q.text)}</textarea></label></div>`;
+    }
     let body = `<label class="field"><span><b>${n}.</b> Question</span><textarea ${P} data-k="prompt" rows="2">${esc(q.prompt)}</textarea></label>`;
     if (q.type === "select") {
       body += `
@@ -196,6 +204,10 @@ Or paste an assignment you already have, from a Claude chat or a document, and i
         <label class="field"><span>Steps in the CORRECT order (one per line). Students get them mixed up.</span>
           <textarea ${P} data-k="steps" rows="${Math.max(3, q.answer.length)}">${esc(q.answer.join("\n"))}</textarea></label>
         <label class="field narrow"><span>Word between steps</span><input ${P} data-k="joiner" value="${esc(q.joiner)}"></label>`;
+    } else if (q.type === "written") {
+      body += `
+        <label class="field"><span>Your answer key <span class="muted small">(optional; only you see it, next to each student's answer. Typed answers aren't checked automatically.)</span></span>
+          <textarea ${P} data-k="sample" rows="2">${esc(q.sample || "")}</textarea></label>`;
     } else if (q.type === "mcq") {
       body += `<div class="field"><span>Choices (pick the correct one)</span>
         ${q.options.map((o, i) => `
@@ -255,7 +267,7 @@ Or paste an assignment you already have, from a Claude chat or a document, and i
         <div class="field"><span>Replace the text from Sefaria</span>${pickerHtml()}</div>
         <label class="field"><span>Title</span><input data-a="title" value="${esc(a.title)}"></label>
         <label class="field"><span>Instructions students see at the top</span><textarea data-a="intro" rows="3">${esc(a.intro)}</textarea></label>
-        <label class="field"><span>Gemara text (blank line between pieces)</span>
+        <label class="field"><span>Gemara text (blank line between pieces). <span class="muted small">Optional: leave it empty if the assignment explains everything itself.</span></span>
           <textarea data-a="gemara" rows="8" dir="rtl" class="he-input">${esc((a.gemara || []).join("\n\n"))}</textarea></label>
         <label class="field"><span>English under each piece (blank line between pieces, same order as the Hebrew). Put **double asterisks** around words to bold them.</span>
           <textarea data-a="english" rows="8">${esc((a.english || []).join("\n\n"))}</textarea></label>
@@ -276,7 +288,7 @@ Or paste an assignment you already have, from a Claude chat or a document, and i
             <input class="parttitle" data-part="${pi}" value="${esc(part.title)}">
             <button class="btn ghost tiny" data-act="partdel" data-p="${pi}">Remove part</button>
           </div>
-          ${part.questions.map((q, qi) => qEditor(q, pi, qi, q.type === "dialogue" ? 0 : ++n)).join("")}
+          ${part.questions.map((q, qi) => qEditor(q, pi, qi, isInfo(q) ? 0 : ++n)).join("")}
           <div class="row addq">
             <span class="muted small">Add:</span>
             ${Object.entries(TYPE_NAMES).map(([k, v]) => `<button class="btn ghost tiny" data-act="qadd" data-p="${pi}" data-t="${k}">${v}</button>`).join("")}
@@ -349,7 +361,7 @@ Or paste an assignment you already have, from a Claude chat or a document, and i
     if (t.dataset.k && t.dataset.q !== undefined) {
       const q = a.parts[+t.dataset.p].questions[+t.dataset.q];
       const k = t.dataset.k;
-      if (k === "prompt" || k === "joiner") q[k] = t.value;
+      if (k === "prompt" || k === "joiner" || k === "text" || k === "sample") q[k] = t.value;
       else if (k === "answer") q.answer = t.value;
       else if (k === "opt") q.options[+t.dataset.i] = t.value;
       else if (k === "right") q.answer = +t.value;
@@ -404,7 +416,7 @@ Or paste an assignment you already have, from a Claude chat or a document, and i
         dirty = true;
         message = { kind: "good", text: a.gemara.length
           ? "Here's the draft. Read every question, fix anything, then save or publish."
-          : "Here's the draft. Add the Gemara text under Basics (Get text from Sefaria), then save or publish." };
+          : "Here's the draft. Read every question, fix anything, then save or publish. No Gemara text is shown to students; add it under Basics if you want it." };
       } catch (err) {
         console.error(err);
         message = { kind: "bad", text: `Couldn't make it: ${err.message}` };

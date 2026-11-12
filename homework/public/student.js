@@ -93,6 +93,9 @@ function render() {
         if (q.type === "dialogue") {
           return `<div class="dialogue">${q.lines.map(([who, line]) => `<p><b>${esc(who)}:</b> ${esc(line)}</p>`).join("")}</div>`;
         }
+        if (q.type === "reading") {
+          return `<div class="reading">${String(q.text || "").split(/\n\s*\n/).filter((t) => t.trim()).map((t) => `<p>${heb(t.trim()).replace(/\n/g, "<br>")}</p>`).join("")}</div>`;
+        }
         n++;
         return `<div class="q" data-q="${q.id}">${questionHtml(q, n)}</div>`;
       }).join("")}
@@ -106,9 +109,9 @@ function render() {
     ${A.status !== "published" ? `<div class="notice warn">Preview. Students can't see this until you publish it.</div>` : ""}
     ${existing ? submittedBanner() : ""}
     <section class="card">
-      ${A.intro ? `<p style="margin-top:0">${heb(A.intro)}</p>` : ""}
+      ${A.intro ? String(A.intro).split(/\n\s*\n/).filter((t) => t.trim()).map((t, i) => `<p${i ? "" : ' style="margin-top:0"'}>${heb(t.trim()).replace(/\n/g, "<br>")}</p>`).join("") : ""}
       ${A.english?.some(Boolean) ? `<div class="row" style="justify-content:flex-end;margin-bottom:6px"><button class="btn ghost tiny" id="toggleEn">${showEnglish ? "Hide English" : "Show English"}</button></div>` : ""}
-      <div class="gemara">${A.gemara.map((p, i) => `
+      <div class="gemara">${(A.gemara || []).map((p, i) => `
         <div class="piece">
           <p>${esc(p)}</p>
           ${showEnglish && A.english?.[i] ? `<p class="en">${boldHtml(A.english[i], esc)}</p>` : ""}
@@ -162,6 +165,11 @@ function questionHtml(q, n) {
           </div>`).join("")}
       </div>`;
   }
+  if (q.type === "written") {
+    return `
+      <label class="prompt" for="${q.id}"><span class="num">${n}.</span>${heb(q.prompt)}</label>
+      <textarea id="${q.id}" class="written" rows="3" placeholder="Type your answer here">${esc(typeof a === "string" ? a : "")}</textarea>`;
+  }
   if (q.type === "mcq") {
     return `
       <p class="prompt"><span class="num">${n}.</span>${heb(q.prompt)}</p>
@@ -178,7 +186,9 @@ function wireQuestions() {
   for (const part of A.parts) for (const q of part.questions) {
     if (!q.id) continue;
     const box = app.querySelector(`[data-q="${q.id}"]`);
-    if (q.type === "select") {
+    if (q.type === "written") {
+      box.querySelector("textarea").oninput = (e) => { answers[q.id] = e.target.value; saveDraft(); };
+    } else if (q.type === "select") {
       box.querySelector("select").onchange = (e) => { answers[q.id] = e.target.value || undefined; saveDraft(); };
     } else if (q.type === "order") {
       box.querySelectorAll("select").forEach((s) => {
@@ -297,7 +307,7 @@ function missingQuestions() {
     const a = answers[q.id];
     const done = q.type === "order"
       ? Array.isArray(a) && q.answer.every((_, i) => a[i])
-      : a !== undefined && a !== null && a !== "";
+      : a !== undefined && a !== null && String(a).trim() !== "";
     if (!done) missing.push(n);
   }
   return missing;

@@ -168,3 +168,8 @@ textarea { resize: vertical; line-height: 1.5; }
 .mark-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 8px; }
 .mark-row .field { margin: 8px 0 0; }
 .mark-row .saved { padding-bottom: 12px; }
+
+/* Readings (text to read inside a part) and typed answers */
+.reading { background: var(--bg); border-radius: 10px; padding: 12px 16px; margin: 14px 0; line-height: 1.6; }
+.reading p { margin: 8px 0; }
+textarea.written { width: 100%; box-sizing: border-box; font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; resize: vertical; }

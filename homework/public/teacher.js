@@ -3,7 +3,7 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp, ref, getDownloadURL,
   SUBMISSIONS, transcribeFromUrl, esc, heb,
 } from "./firebase.js";
-import { scoreAnswers, questionCount } from "./assignments.js";
+import { scoreAnswers, questionCount, scoredCount } from "./assignments.js";
 import { listAssignments } from "./store.js";
 import { openBuilder } from "./builder.js";
 import { downloadReport } from "./report.js";
@@ -264,7 +264,7 @@ function render() {
   app.querySelectorAll("[data-retry]").forEach((b) => (b.onclick = () => retry(b.dataset.retry, b)));
 }
 
-function countQuestions() { return questionCount(A); }
+function countQuestions() { return scoredCount(A); }
 
 function statusPill(s) {
   if (s.transcriptStatus === "done") return `<span class="pill good">Transcribed</span>`;
@@ -312,6 +312,13 @@ function answersHtml(s, sc) {
     const ok = sc.perQuestion[q.id];
     const a = s.answers?.[q.id];
     let given, right;
+    if (q.type === "written") {
+      // Typed answer: shown for the teacher to read, with their own answer key under it. Not auto-checked.
+      out += `
+      <span class="mark">${n}</span>
+      <div>${a && String(a).trim() ? heb(String(a)).replace(/\n/g, "<br>") : "–"}${q.sample ? `<div class="correct">Your answer key: ${heb(q.sample)}</div>` : ""}</div>`;
+      continue;
+    }
     if (q.type === "mcq") {
       given = a === undefined ? "–" : `${"abcd"[a]}. ${q.options[a]}`;
       right = `${"abcd"[q.answer]}. ${q.options[q.answer]}`;
@@ -369,14 +376,14 @@ function downloadCsv() {
   const list = visibleSubs();
   let qNums = [], n = 0;
   for (const part of A.parts) for (const q of part.questions) if (q.id) qNums.push([q, ++n]);
-  const header = ["Name", "Email", "Submitted", "Score", "Out of", ...qNums.map(([, n]) => `Q${n} correct`), "Recording seconds", "Transcript"];
+  const header = ["Name", "Email", "Submitted", "Score", "Out of", ...qNums.map(([q, n]) => (q.type === "written" ? `Q${n} typed answer` : `Q${n} correct`)), "Recording seconds", "Transcript"];
   const rows = list.map((s) => {
     const sc = scoreAnswers(A, s.answers);
     return [
       s.name, s.email,
       s.submittedAt?.toDate ? s.submittedAt.toDate().toISOString() : "",
       sc.correct, sc.total,
-      ...qNums.map(([q]) => (sc.perQuestion[q.id] ? "yes" : "no")),
+      ...qNums.map(([q]) => (q.type === "written" ? (s.answers?.[q.id] || "") : (sc.perQuestion[q.id] ? "yes" : "no"))),
       s.audioSeconds || "", s.transcript || "",
     ];
   });

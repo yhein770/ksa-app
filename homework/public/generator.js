@@ -18,7 +18,9 @@ LANGUAGE
 
 QUESTION RULES
 - Test the concepts and the flow of the sugya (passage). Do NOT ask translation or definition questions. Do not ask about named opinions.
-- "select" questions (word bank): every question in that part uses the same word bank of 3 to 6 short choices. Exactly one choice fits each question.
+- "select" questions (word bank): every question in that part uses the same word bank of 3 to 6 short choices. Exactly one choice fits each question. A plain YES / NO question is also a "select" question, with just those 2 choices; that is fine and needs no comment.
+- "reading" items are not questions. They are text the student reads at that spot, such as background the teacher wants explained before the questions. "text" is the reading; separate paragraphs with a blank line (\n\n). Use one only when the teacher gives or asks for explanatory text.
+- "written" questions are typed answers of a sentence or two. Use one ONLY when the teacher asks for a typed or written answer. They are not checked automatically. "sample" is the teacher's answer key for it, or an empty string if none was given.
 - "order" questions: 3 to 5 steps of the sugya's reasoning, given in the CORRECT order in "steps". There must be only one sensible order. "joiner" is the word that links the steps, e.g. "because" or "then".
 - "mcq" questions: exactly 4 choices. Exactly one is defensible from the text. The wrong ones should be plausible to a student who didn't follow the text, but clearly wrong if they did. Keep all 4 about the same length, and the correct one must NOT be the longest. "answerIndex" is the 0-based index of the correct choice.
 - "dialogue" items are not questions. Use one only if an everyday example (like a short conversation) makes the concept click. "lines" is a list of [speaker, line] pairs.
@@ -41,7 +43,9 @@ Return ONLY a JSON object, no other text, in exactly this shape:
         { "type": "select", "prompt": "...", "options": ["...", "..."], "answer": "..." },
         { "type": "order", "prompt": "...", "joiner": "because", "steps": ["first", "second", "third"] },
         { "type": "dialogue", "lines": [["Teacher", "..."], ["Student", "..."]] },
-        { "type": "mcq", "prompt": "...", "options": ["...", "...", "...", "..."], "answerIndex": 2 }
+        { "type": "mcq", "prompt": "...", "options": ["...", "...", "...", "..."], "answerIndex": 2 },
+        { "type": "reading", "text": "First paragraph.\n\nSecond paragraph." },
+        { "type": "written", "prompt": "...", "sample": "..." }
       ]
     }
   ],
@@ -107,6 +111,8 @@ export async function reviseAssignment(current, gemaraText, request) {
         if (q.type === "mcq") return { type: "mcq", prompt: q.prompt, options: q.options, answerIndex: q.answer };
         if (q.type === "order") return { type: "order", prompt: q.prompt, joiner: q.joiner, steps: q.answer };
         if (q.type === "select") return { type: "select", prompt: q.prompt, options: q.options, answer: q.answer };
+        if (q.type === "reading") return { type: "reading", text: q.text };
+        if (q.type === "written") return { type: "written", prompt: q.prompt, sample: q.sample || "" };
         return { type: "dialogue", lines: q.lines };
       }),
     })),
@@ -131,8 +137,16 @@ export async function draftFromPrompt(input) {
     `HOW TO HANDLE IT:
 - Follow the teacher's request. It overrides the defaults above where they conflict (level, number of questions, voice memo or not, and so on).
 - If the request contains an assignment the teacher already wrote (for example pasted from a chat or a document), convert it faithfully: keep their questions, wording, answers and order, and only change what the format requires.
-- The site has four question types (select, order, mcq, dialogue) plus the voice memo. Open-ended written questions aren't supported. Turn an open-ended "explain" question into a voice memo checklist item; turn a question with one short right answer into a select or mcq question.
-- If the teacher asks for the voice memo before the questions, set "voiceFirst": true at the top level.
+- Everything the teacher's assignment needs is supported, so convert it without substitutions:
+  - Explanatory text or background the student reads -> a "reading" item, placed in its part right before the questions it goes with, wording unchanged. Never put a reading inside a question's "prompt", and never drop it.
+  - A typed / written / "answer in 1 or 2 sentences" question -> a "written" question. Put the teacher's answer for it (from their answer key, if any) in "sample". Do not turn it into multiple choice and do not invent choices.
+  - YES / NO, or a choice between two things -> a "select" question with exactly those choices.
+  - A blank to fill in with one short right answer -> a "select" question whose choices are the answers the teacher's own text makes obvious (names, numbers, the two sides). Only if the teacher gave no usable choices, make it a "written" question.
+  - Multiple choice where the teacher wrote the choices -> "mcq" with exactly those choices (pad nothing, rewrite nothing).
+- If the teacher gave an answer key, use it for the correct answers and never show it to students: it must not appear in "intro", readings or prompts.
+- "intro" is only for instructions the teacher wants at the very top. If the teacher gave none, write one plain sentence saying what to do (for example: Read each part, then answer the questions under it.).
+- Voice memo: "voiceFirst" is true only if the teacher says the recording comes first or before the questions. If the teacher puts the recording at the end, or says nothing about where it goes, set "voiceFirst": false.
+- "teacherChecks" is ONLY for claims about what the Gemara says that the teacher should verify. Do not list format decisions. Do not ask the teacher to confirm their own background readings, their own simplified examples, or wording they wrote themselves. If there is nothing to verify, return an empty list.
 - If the Hebrew/Aramaic text of the Gemara appears in the teacher's message (and no GEMARA TEXT was given above), add "gemara": [pieces] and, if there is English for it, "english": [pieces, same count], copying ONLY text that is actually in the message. Never write the Gemara text from memory. If the text isn't in the message, leave both out; the teacher will add it.
 - If the teacher pasted English with the literal translation in bold, keep the bold as **double asterisks**.`,
   ].filter(Boolean).join("\n\n");
