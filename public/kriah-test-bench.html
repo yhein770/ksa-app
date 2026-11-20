@@ -61,6 +61,14 @@
   button.pill{border:none;box-shadow:none;cursor:pointer;font-size:11px;padding:2px 10px}
   .review{background:rgba(0,122,255,.05);border:2px solid rgba(0,122,255,.35);border-radius:12px;padding:12px 14px;margin:4px 0 16px}
   .review .rtitle{font-size:16px;font-weight:700;margin-bottom:2px}
+  .pwords{display:flex;flex-wrap:wrap;gap:6px;direction:rtl;margin:6px 0}
+  .pword{display:flex;flex-direction:column;align-items:center;gap:2px}
+  .pword .tr{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted);cursor:pointer;border-bottom:1px dashed rgba(0,0,0,.2);direction:ltr}
+  .pword .tr.fixed{color:#9a6200;border-bottom-color:var(--amber);font-weight:600}
+  .pword input{width:90px;font-size:11px;padding:2px 4px;border-radius:6px;direction:ltr;text-align:center}
+  .enedit{cursor:pointer;border-bottom:1px dashed rgba(0,0,0,.2)}
+  .enedit.fixed{color:#9a6200;font-weight:600;border-bottom-color:var(--amber)}
+  .pnote{width:100%;margin-top:6px;font-size:13px;padding:6px 10px}
   .rpair{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0;font-size:13px}
   /* modes: admin sees the bench; everyone else sees the contributor screen */
   body[data-mode=loading] #bench, body[data-mode=loading] #contrib,
@@ -360,6 +368,8 @@ $("promptTpl").addEventListener("input", () => localStorage.setItem("ktb_tpl", $
 function stripNikud(s){return s.replace(/[\u0591-\u05C7]/g,"").replace(/[^\u05D0-\u05EA\s]/g,"").trim();}
 // Learned pronunciations are keyed by the bare consonants of a word, so they carry across passages.
 const aliasId = he => stripNikud(he||"").replace(/\s/g,"");
+// Human-corrected phrase pairs are keyed by the passage's bare Hebrew.
+const passageId = he => hashStr(stripNikud(he||"").replace(/\s+/g," "));
 
 async function callClaude(user, system, max=4500){
   const r = await fetch(CLAUDE_URL,{method:"POST",headers:{"Content-Type":"application/json"},
@@ -691,6 +701,7 @@ async function getIndexedPairs(){
   const heText = $("heText").value.trim(), enText = $("enText").value.trim();
   let pairs = [];
   try{ const p = JSON.parse($("pairsJson").value); if(Array.isArray(p)) pairs = p; }catch{}
+  if(!pairs.length){ try{ pairs = (await window.kbStore?.passagePairs(passageId(heText))) || []; }catch{} }
   if(!pairs.length) pairs = await makeGradingPairs(heText, enText);
   if(!pairs.length) return [{idx:0,he:heText,en:enText,wordIdxs:wordKey.map(w=>w.i)}];
   let cursor=0;
@@ -734,6 +745,8 @@ async function judge(transcript, ctx){
   let learned = null;
   try{ learned = await window.kbStore?.learned(wk, ctx?.excludeRunId); }catch(e){ console.warn("learned data unavailable", e); }
   const lessons = learned?.lessons || [];
+  // human-corrected transliterations replace the generated ones
+  wk = wk.map(w => { const f = learned?.aliases?.[aliasId(w.he)]?.fixedTr; return f ? {...w, tr: f} : w; });
   const prompt = buildPrompt(transcript, wk, ip, lessons);
   const raw = await callClaude(prompt, JUDGE_SYSTEM, JUDGE_MAXTOK);
   const judged = parseJson(raw);
@@ -748,7 +761,7 @@ async function judge(transcript, ctx){
     const a = learned?.aliases?.[aliasId(w.he)];
     if(!a) return w;
     const trs = Array.isArray(w.tr) ? w.tr : [w.tr];
-    return {...w, tr: [...new Set([...trs, ...a.extra])], block: a.block};
+    return {...w, tr: [...new Set([...trs, ...(a.extra||[])])], block: a.block || []};
   });
   const align = alignReading(readingText, translationText, alignKey);
   const heScore = align.heScore;
@@ -791,7 +804,8 @@ $("btnCopy").onclick = async () => {
 // ── human review: the reviewer's verdicts start as the grader's and get flipped where it was wrong
 const TRANS_CYCLE = {matched:"partial", partial:"missing", missing:"matched"};
 function initReview(res){
-  review = { read: res.align.perWord.map(w=>w.read), trans: {}, notes: "", saved: false };
+  // trFix: word index → corrected transliteration · enFix: pair idx → corrected English answer key · pairNotes: pair idx → note
+  review = { read: res.align.perWord.map(w=>w.read), trans: {}, trFix: {}, enFix: {}, pairNotes: {}, notes: "", saved: false };
   res.judged.pairs.forEach(p => { review.trans[p.idx] = p.translation; });
 }
 function pairKriah(read, wordIdxs){
@@ -799,6 +813,7 @@ function pairKriah(read, wordIdxs){
   const m = wordIdxs.filter(i=>read[i]).length;
   return m===wordIdxs.length ? "read" : m>0 ? "partial" : "missing";
 }
+const primTr = tr => Array.isArray(tr) ? tr[0] : (tr || "");
 function renderResults(res){
   const {judged, ip, heScore, enScore, align} = res;
   const w = {matched:1,partial:.5,missing:0};
@@ -806,49 +821,78 @@ function renderResults(res){
   const youEn = Math.round(judged.pairs.reduce((s,p)=>s+(w[review.trans[p.idx]]??0),0)/(judged.pairs.length||1)*100);
   const nW = align.perWord.filter((x,k)=>review.read[k]!==x.read).length;
   const nT = judged.pairs.filter(p=>review.trans[p.idx]!==p.translation).length;
+  const nTr = Object.keys(review.trFix).length, nEn = Object.keys(review.enFix).length;
+  const nNotes = Object.values(review.pairNotes).filter(x => x.trim()).length;
+  const total = nW + nT + nTr + nEn;
+  const keyOf = k => (res.wk || [])[k] || align.perWord[k] || {};
   const pairHtml = judged.pairs.map(p=>{
     const ref = ip[p.idx]||{};
     const kr = pairKriah(review.read, ref.wordIdxs) || p.heRead || "missing";
     const t = review.trans[p.idx], tChanged = t !== p.translation;
+    const words = (ref.wordIdxs||[]).map(k => {
+      const x = align.perWord[k]; if(!x) return "";
+      const r = review.read[k], fixed = review.trFix[k];
+      return `<div class="pword">
+        <button class="wchip ${r?"read":"missing"}${r!==x.read?" changed":""}" data-w="${k}" title="Tap: read / not read (grader said ${x.read?"read":"not read"})">${x.he}</button>
+        <span class="tr${fixed?" fixed":""}" data-tr="${k}" title="Tap to fix the transliteration">${esc(fixed || primTr(keyOf(k).tr))}${fixed?" ✎":""}</span>
+      </div>`;
+    }).join("");
+    const enFixed = review.enFix[p.idx];
     return `<div class="pairrow">
-      <div class="heline">${ref.he||""}</div>
-      <div class="enline">${ref.en||""}</div>
+      <div class="pwords">${words}</div>
+      <div class="enline"><span class="enedit${enFixed!=null?" fixed":""}" data-en="${p.idx}" title="Tap if this English answer key is wrong">${esc(enFixed ?? ref.en ?? "")}${enFixed!=null?" ✎":""}</span></div>
       <span class="pill ${kr}">kriah: ${kr}</span>
       <button class="pill ${t}${tChanged?" changed":""} tpill" data-p="${p.idx}" title="Tap to correct — grader said ${p.translation}">translation: ${t}${tChanged?" ✎":""}</button>
-      <div class="heard">heard: "${p.heard||""}" → "${p.transHeard||""}"</div>
+      <div class="heard">heard: "${esc(p.heard)}" → "${esc(p.transHeard)}"</div>
+      <input type="text" class="pnote" data-note="${p.idx}" placeholder="What's wrong in this phrase? (optional)">
     </div>`;
   }).join("");
-  const chips = align.perWord.map((x,k)=>{
-    const r = review.read[k];
-    return `<button class="wchip ${r?"read":"missing"}${r!==x.read?" changed":""}" data-w="${k}" title="grader: ${x.read?"read":"not read"} (confidence ${x.confidence.toFixed(2)})">${x.he}</button>`;
-  }).join("");
-  const corrected = nW || nT;
+  const summary = [nW && `${nW} word${nW>1?"s":""} flipped`, nT && `${nT} verdict${nT>1?"s":""}`, nTr && `${nTr} transliteration${nTr>1?"s":""}`, nEn && `${nEn} answer key${nEn>1?"s":""}`, nNotes && `${nNotes} note${nNotes>1?"s":""}`].filter(Boolean).join(" · ");
   $("results").innerHTML = `
     <div class="scores">
       <div class="scorebox"><div class="n">${heScore}${nW?` → ${youHe}`:""}</div><div class="l">Hebrew read${nW?" (grader → you)":""}</div></div>
       <div class="scorebox"><div class="n">${enScore}${nT?` → ${youEn}`:""}</div><div class="l">Translation${nT?" (grader → you)":""}</div></div>
     </div>
     <div class="review" id="reviewBox">
-      <div class="rtitle">✎ Was this graded right? Fix anything it got wrong</div>
-      <div class="hint" style="margin-top:2px">Tap a word to flip it between read (green) and not read (red). Tap a translation verdict to change it. What you change gets an orange ring. Saving teaches the grader.</div>
-      <label>Hebrew words</label>
-      <div class="wchips">${chips}</div>
-      <label>Translation</label>
-      ${judged.pairs.map(p => { const t = review.trans[p.idx], ch = t !== p.translation;
-        return `<div class="rpair"><button class="pill ${t}${ch?" changed":""} tpill" data-p="${p.idx}" title="Tap to change — grader said ${p.translation}">${t}${ch?" ✎":""}</button><span>${(ip[p.idx]||{}).en||""}</span></div>`; }).join("")}
-      <textarea id="reviewNotes" rows="2" placeholder="Notes (optional): what you actually did, anything else it missed"></textarea>
+      <div class="rtitle">✎ Was this graded right? Fix it in the phrases below</div>
+      <div class="hint" style="margin-top:2px">In each phrase: tap a <b>Hebrew word</b> to flip read / not read · tap the <b>transliteration</b> under a word to fix how it should sound · tap the <b>English</b> if the answer key itself is wrong · tap the <b>translation</b> verdict to change it · type in the box to say what's wrong. Changes get an orange ring.</div>
+      <textarea id="reviewNotes" rows="2" placeholder="Overall notes (optional)"></textarea>
       <div class="row">
-        <button class="primary" id="btnReview"${review.saved?" disabled":""}>${review.saved?"Review saved ✓":corrected?`Save review (${nW+nT} correction${nW+nT===1?"":"s"})`:"Looks right ✓ save review"}</button>
+        <button class="primary" id="btnReview"${review.saved?" disabled":""}>${review.saved?"Review saved ✓":(total||nNotes)?`Save review (${summary})`:"Looks right ✓ save review"}</button>
         <span class="status" id="reviewStatus"></span>
       </div>
     </div>
-    <label>Phrase-by-phrase details</label>${pairHtml}
+    <label>Phrase by phrase</label>${pairHtml}
     <details><summary>Raw JSON</summary><div class="mono">${JSON.stringify(judged,null,2).replace(/</g,"&lt;")}</div></details>`;
   $("reviewNotes").value = review.notes;
   $("reviewNotes").addEventListener("input", e => { review.notes = e.target.value; });
+  document.querySelectorAll(".pnote").forEach(inp => {
+    inp.value = review.pairNotes[inp.dataset.note] || "";
+    inp.disabled = review.saved;
+    inp.addEventListener("input", () => { review.pairNotes[inp.dataset.note] = inp.value; });
+    inp.addEventListener("change", () => renderResults(res));
+  });
   if(review.saved) return;
   document.querySelectorAll(".wchip").forEach(b => b.onclick = () => { review.read[+b.dataset.w] = !review.read[+b.dataset.w]; renderResults(res); });
   document.querySelectorAll(".tpill").forEach(b => b.onclick = () => { const i = +b.dataset.p; review.trans[i] = TRANS_CYCLE[review.trans[i]] || "matched"; renderResults(res); });
+  // inline editors: swap the text for an input; Enter/blur commits, Esc cancels, empty reverts
+  const inlineEdit = (el, current, original, commit, multiline) => {
+    const inp = document.createElement(multiline ? "textarea" : "input");
+    inp.value = current; if(multiline){ inp.rows = 2; inp.style.width = "100%"; }
+    el.replaceWith(inp); inp.focus(); inp.select();
+    let done = false;
+    const finish = save => { if(done) return; done = true; if(save){ const v = inp.value.trim(); commit(!v || v === original ? null : v); } renderResults(res); };
+    inp.addEventListener("keydown", e => { if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); finish(true); } if(e.key === "Escape") finish(false); });
+    inp.addEventListener("blur", () => finish(true));
+  };
+  document.querySelectorAll(".pword .tr").forEach(el => el.onclick = () => {
+    const k = +el.dataset.tr, orig = primTr(keyOf(k).tr);
+    inlineEdit(el, review.trFix[k] || orig, orig, v => { if(v) review.trFix[k] = v; else delete review.trFix[k]; });
+  });
+  document.querySelectorAll(".enedit").forEach(el => el.onclick = () => {
+    const i = +el.dataset.en, orig = ip[i]?.en || "";
+    inlineEdit(el, review.enFix[i] ?? orig, orig, v => { if(v) review.enFix[i] = v; else delete review.enFix[i]; }, true);
+  });
   $("btnReview").onclick = () => saveReview(res);
 }
 
@@ -899,6 +943,19 @@ function aliasVotes(res){
   });
   return Object.values(byId);
 }
+// Make saved fixes take effect right away on this screen (the cloud copies cover future runs and other devices).
+function applyFixesLocally(trFixes, pairFix){
+  if(wordKey && trFixes.length){
+    const byId = Object.fromEntries(trFixes.map(f => [f.id, f.tr]));
+    wordKey = wordKey.map(w => byId[aliasId(w.he)] ? {...w, tr: byId[aliasId(w.he)]} : w);
+    try{ localStorage.setItem("ktb_key_" + stripNikud($("heText").value.trim()).slice(0,120), JSON.stringify(wordKey)); }catch{}
+    renderKey();
+  }
+  if(pairFix){
+    $("pairsJson").value = JSON.stringify(pairFix.pairs);
+    try{ localStorage.setItem("ktb_gpairs_" + stripNikud($("heText").value.trim()).slice(0,120), JSON.stringify(pairFix.pairs)); }catch{}
+  }
+}
 async function saveReview(res){
   const st = $("reviewStatus");
   if(!window.kbStore?.user()){ st.className="status err"; st.textContent="Sign in (top of page) to save reviews."; return; }
@@ -910,11 +967,20 @@ async function saveReview(res){
       pairHe: res.ip[p.idx]?.he||"", pairEn: res.ip[p.idx]?.en||"", transHeard: p.transHeard||"",
       modelVerdict: p.translation, correctVerdict: review.trans[p.idx] }));
     const votes = aliasVotes(res);
+    const trFixes = Object.entries(review.trFix).map(([k,tr]) => ({id: aliasId(res.align.perWord[k]?.he), he: res.align.perWord[k]?.he, tr})).filter(f => f.id);
+    const pairFix = Object.keys(review.enFix).length
+      ? {id: passageId($("heText").value.trim()), pairs: res.ip.map(p => ({he: p.he, en: review.enFix[p.idx] ?? p.en}))}
+      : null;
+    const pairNotes = Object.fromEntries(Object.entries(review.pairNotes).filter(([,v]) => v.trim()));
     await window.kbStore.saveReview(runId, runPayload(res),
-      {read: review.read, trans: review.trans, notes: review.notes.trim()}, lessons, votes);
+      {read: review.read, trans: review.trans, trFix: review.trFix, enFix: review.enFix, pairNotes, notes: review.notes.trim()},
+      lessons, votes, trFixes, pairFix);
+    applyFixesLocally(trFixes, pairFix);
     review.saved = true;
     renderResults(res);
-    $("reviewStatus").textContent = `Saved. Learned ${votes.length} pronunciation${votes.length===1?"":"s"} and ${lessons.length} translation correction${lessons.length===1?"":"s"}.`;
+    const learnedBits = [votes.length && `${votes.length} pronunciation${votes.length===1?"":"s"}`, trFixes.length && `${trFixes.length} transliteration fix${trFixes.length===1?"":"es"}`,
+      lessons.length && `${lessons.length} translation correction${lessons.length===1?"":"s"}`, pairFix && "a corrected answer key"].filter(Boolean);
+    $("reviewStatus").textContent = learnedBits.length ? `Saved. Learned ${learnedBits.join(", ")}. Run the judge again to see it re-graded.` : "Saved as confirmed correct.";
   }catch(e){ console.error(e); st.className="status err"; st.textContent="Save failed: "+e.message; $("btnReview").disabled = false; }
 }
 
@@ -1235,6 +1301,7 @@ async function loadRunForReview(run){
     showHeadline(res);
     if(run.reviewed && run.review){
       review.read = run.review.read; review.trans = run.review.trans; review.notes = run.review.notes || ""; review.saved = true;
+      review.trFix = run.review.trFix || {}; review.enFix = run.review.enFix || {}; review.pairNotes = run.review.pairNotes || {};
       renderResults(res);
     }
   } else {
@@ -1337,7 +1404,7 @@ function digest(d){
   const yes = d.yes || {}, no = d.no || {};
   const extra = Object.keys(yes).filter(t => yes[t] > (no[t]||0));
   const block = Object.keys(no).filter(t => no[t] > (yes[t]||0));
-  return extra.length || block.length ? {extra, block} : null;
+  return extra.length || block.length || d.fixedTr ? {extra, block, fixedTr: d.fixedTr || null} : null;
 }
 
 async function refreshStats(){
@@ -1381,7 +1448,7 @@ window.kbStore = {
   audioUrl: path => getDownloadURL(ref(storage, path)),
   signIn: () => signInWithPopup(auth, new GoogleAuthProvider()).catch(e => alertStatus("Sign-in failed: " + e.message)),
   signOut: () => signOut(auth),
-  async saveReview(runId, result, rev, lessons, votes){
+  async saveReview(runId, result, rev, lessons, votes, trFixes = [], pairFix = null){
     const u = auth.currentUser;
     const b = writeBatch(db);
     b.update(doc(RUNS, runId), {...result, review: {...rev, uid: u.uid, email: u.email}, reviewed: true, reviewedAt: serverTimestamp()});
@@ -1390,6 +1457,8 @@ window.kbStore = {
       const inc = m => Object.fromEntries(Object.entries(m).map(([t,n]) => [t, increment(n)]));
       b.set(doc(db, "kriahBenchAliases", v.id), {he: v.he, yes: inc(v.yes), no: inc(v.no)}, {merge: true});
     });
+    trFixes.forEach(f => b.set(doc(db, "kriahBenchAliases", f.id), {he: f.he, fixedTr: f.tr, fixedBy: u.email, fixedAt: serverTimestamp()}, {merge: true}));
+    if(pairFix) b.set(doc(db, "kriahBenchPassages", pairFix.id), {pairs: pairFix.pairs, fixedBy: u.email, fixedAt: serverTimestamp()});
     await b.commit();
     cache = null;
     refreshStats();
@@ -1407,6 +1476,12 @@ window.kbStore = {
     const aliases = {};
     ids.forEach(id => { if(cache.aliases[id]) aliases[id] = cache.aliases[id]; });
     return {aliases, lessons: cache.lessons.filter(l => l.runId !== excludeRunId).slice(0, 12)};
+  },
+  // human-corrected phrase pairs for a passage (id = hash of the bare Hebrew), or null
+  async passagePairs(id){
+    if(!auth.currentUser) return null;
+    const snap = await getDoc(doc(db, "kriahBenchPassages", id));
+    return snap.exists() ? snap.data().pairs : null;
   },
   async reviewedRuns(n){
     const snap = await getDocs(query(RUNS, orderBy("reviewedAt","desc"), limit(n)));

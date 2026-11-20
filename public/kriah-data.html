@@ -178,7 +178,7 @@ function flatten(id, d){
     task, source, ref, heText: d.heText || "", enText: d.enText || "", transcript: d.transcript || "",
     status, graderHe: d.heScore ?? null, graderEn: d.enScore ?? null, reviewerHe, reviewerEn,
     wordAgree, transAgree, wrongWords, wrongTrans, disagree: !!d.review && (wrongWords + wrongTrans) > 0,
-    notes: d.review?.notes || "", audioPath: d.audioPath || "", words: (d.heText || "").split(/\s+/).filter(Boolean).length };
+    notes: [d.review?.notes, ...Object.values(d.review?.pairNotes || {})].filter(Boolean).join(" · "), audioPath: d.audioPath || "", words: (d.heText || "").split(/\s+/).filter(Boolean).length };
 }
 
 let rows = [], lastDoc = null, sortKey = "date", sortDir = -1, openId = null;
@@ -276,6 +276,7 @@ function detailRow(r){
       <div class="dlabel">Transcript</div><div class="mono">${esc(r.transcript) || "—"}</div>
       <div class="dlabel">Translation verdicts</div>${pairs || "—"}
       ${r.notes ? `<div class="dlabel">Review notes</div><div>${esc(r.notes)}</div>` : ""}
+      ${fixesHtml(d)}
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <a href="kriah-test-bench.html?run=${r.id}" target="_blank"><button class="primary sm">${d.reviewed ? "Open in bench" : "Review in bench"} →</button></a>
         <button class="sm del" data-id="${r.id}" style="color:var(--red);border-color:rgba(255,59,48,.3)">🗑 Delete</button>
@@ -305,6 +306,14 @@ async function removeRun(id){
     render();
     $("count").textContent += " · deleted 1 run." + audioNote;
   }catch(e){ alert("Delete failed: " + e.message); }
+}
+
+function fixesHtml(d){
+  const rv = d.review || {}, ip = d.ip || [], items = [];
+  Object.entries(rv.trFix || {}).forEach(([k,tr]) => items.push(`Transliteration of <span class="he">${esc(d.perWord?.[k]?.he)}</span>: "${esc([].concat(d.wordKey?.[k]?.tr ?? "")[0])}" → <b>"${esc(tr)}"</b>`));
+  Object.entries(rv.enFix || {}).forEach(([i,en]) => items.push(`Answer key for phrase ${+i+1}: "${esc(ip[i]?.en)}" → <b>"${esc(en)}"</b>`));
+  Object.entries(rv.pairNotes || {}).forEach(([i,n]) => items.push(`Phrase ${+i+1} (<span class="he">${esc(ip[i]?.he)}</span>): ${esc(n)}`));
+  return items.length ? `<div class="dlabel">Corrections</div>${items.map(x => `<div style="margin-bottom:3px">• ${x}</div>`).join("")}` : "";
 }
 
 async function play(b){
