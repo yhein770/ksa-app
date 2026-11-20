@@ -20,7 +20,7 @@ service firebase.storage {
     }
     match /kriah-bench/{uid}/{file} {
       // only the bench admin can listen; keep in sync with ADMIN_EMAILS in public/kriah-test-bench.html
-      allow read: if request.auth != null && request.auth.token.email == 'jhein1@mail.yu.edu';
+      allow read, delete: if request.auth != null && request.auth.token.email == 'jhein1@mail.yu.edu';
       allow create: if request.auth != null && request.auth.uid == uid
                     && request.resource.size < 25 * 1024 * 1024
                     && request.resource.contentType.matches('audio/.*');

@@ -133,8 +133,8 @@ const PAGE = 500;
 const G = "https://www.gstatic.com/firebasejs/12.10.0";
 const { initializeApp } = await import(`${G}/firebase-app.js`);
 const { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } = await import(`${G}/firebase-auth.js`);
-const { getFirestore, collection, getDocs, query, orderBy, limit, startAfter } = await import(`${G}/firebase-firestore.js`);
-const { getStorage, ref, getDownloadURL } = await import(`${G}/firebase-storage.js`);
+const { getFirestore, collection, doc, getDocs, deleteDoc, writeBatch, query, where, orderBy, limit, startAfter } = await import(`${G}/firebase-firestore.js`);
+const { getStorage, ref, getDownloadURL, deleteObject } = await import(`${G}/firebase-storage.js`);
 const app = initializeApp({
   apiKey: "AIzaSyAJ4PiCzf5cMhp1FCEv1EA478rlC1H9FOU",
   authDomain: "kitzur-app1.firebaseapp.com",
@@ -247,6 +247,7 @@ function render(){
     openId = openId === tr.dataset.id ? null : tr.dataset.id; render();
   });
   document.querySelectorAll("button.play").forEach(b => b.onclick = () => play(b));
+  document.querySelectorAll("button.del").forEach(b => b.onclick = () => removeRun(b.dataset.id));
   renderTiles(); renderPeople();
 }
 
@@ -277,9 +278,33 @@ function detailRow(r){
       ${r.notes ? `<div class="dlabel">Review notes</div><div>${esc(r.notes)}</div>` : ""}
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <a href="kriah-test-bench.html?run=${r.id}" target="_blank"><button class="primary sm">${d.reviewed ? "Open in bench" : "Review in bench"} →</button></a>
+        <button class="sm del" data-id="${r.id}" style="color:var(--red);border-color:rgba(255,59,48,.3)">🗑 Delete</button>
         <span class="status">${esc(r.email)} · id ${r.id}</span>
       </div>
     </div></div></td></tr>`;
+}
+
+// Deletes the run, its recording, and the translation corrections it produced.
+// (Pronunciation votes are pooled counts per word, so they can't be traced back and stay.)
+async function removeRun(id){
+  const r = rows.find(x => x.id === id);
+  if(!r || !confirm(`Delete this run permanently?\n\n${r.who} · ${r.ref || "custom text"} · ${r.date ? r.date.toLocaleString() : ""}\n\nThe recording and its data will be gone for good.`)) return;
+  let audioNote = "";
+  if(r.audioPath){
+    try{ await deleteObject(ref(storage, r.audioPath)); }
+    catch(e){ if(e.code !== "storage/object-not-found"){ console.error(e); audioNote = " ⚠ The recording file couldn't be deleted (" + e.code + "). Deploy the latest storage rules, then delete it in the Firebase console under Storage → " + r.audioPath + "."; } }
+  }
+  try{
+    const lessons = await getDocs(query(collection(db, "kriahBenchLessons"), where("runId", "==", id)));
+    const b = writeBatch(db);
+    lessons.docs.forEach(l => b.delete(l.ref));
+    b.delete(doc(RUNS, id));
+    await b.commit();
+    rows = rows.filter(x => x.id !== id);
+    if(openId === id) openId = null;
+    render();
+    $("count").textContent += " · deleted 1 run." + audioNote;
+  }catch(e){ alert("Delete failed: " + e.message); }
 }
 
 async function play(b){
