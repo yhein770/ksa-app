@@ -10,7 +10,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "deploy": "vite build && firebase deploy --only hosting --project kitzur-app1 && firebase deploy --only hosting --project kitzur-app",
-    "deploy:rules": "firebase deploy --only firestore:rules,storage,database --project kitzur-app1"
+    "deploy:rules": "firebase deploy --only storage --project kitzur-app1"
   },
   "dependencies": {
     "cors": "^2.8.6",

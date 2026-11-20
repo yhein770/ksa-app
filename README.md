@@ -11,10 +11,10 @@
 | What | Command | Goes to |
 |---|---|---|
 | Website (app, kriah bench, kriah data page) | `npm run deploy` | builds, then hosting on `kitzur-app1` **and** the `kitzur-app` mirror |
-| Security rules (Firestore, Storage, Realtime DB) | `npm run deploy:rules` | `kitzur-app1` only. Replaces the live rules: compare with the Firebase console first |
+| Storage security rules | `npm run deploy:rules` | `kitzur-app1` only. Replaces the live rules: compare with the Firebase console first |
 | Homework site | `cd homework && firebase deploy` | `kitzur-app1` (site `ksa-homework`) |
 
-Plain `firebase deploy` also targets `kitzur-app1` (the default in `.firebaserc`).
+Plain `firebase deploy` also targets `kitzur-app1` (the default in `.firebaserc`), but avoid it: `firestore.rules` and `database.rules.json` in this repo have not been checked against what's live on `kitzur-app1` (the live Storage rules had a `homework-audio` section the repo was missing). Before deploying either, copy the live version from the console into the repo first.
 
 ---
 
