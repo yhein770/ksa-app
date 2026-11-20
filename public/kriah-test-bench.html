@@ -53,13 +53,89 @@
   .runrow .rs{color:var(--muted);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   details{margin-top:10px}
   summary{cursor:pointer;font-size:13px;color:var(--blue);font-weight:500}
+  .wchips{display:flex;flex-wrap:wrap;gap:6px;direction:rtl;margin:8px 0}
+  .wchip{font-family:'Heebo',sans-serif;font-size:16px;padding:4px 10px;border-radius:8px;box-shadow:none}
+  .wchip.read{background:rgba(52,199,89,.12);color:#1d7a35;border-color:rgba(52,199,89,.3)}
+  .wchip.missing{background:rgba(255,59,48,.08);color:#b3261e;border-color:rgba(255,59,48,.25)}
+  .wchip.changed,.pill.changed{outline:2px solid var(--amber);outline-offset:1px}
+  button.pill{border:none;box-shadow:none;cursor:pointer;font-size:11px;padding:2px 10px}
+  .review{border-top:1px solid var(--line);margin-top:14px;padding-top:6px}
+  /* modes: admin sees the bench; everyone else sees the contributor screen */
+  body[data-mode=loading] #bench, body[data-mode=loading] #contrib,
+  body[data-mode=contributor] #bench, body[data-mode=signedout] #bench,
+  body[data-mode=admin] #contrib, body[data-mode=offline] #contrib{display:none}
+  body:not([data-mode=loading]) #loader{display:none}
+  body:not([data-mode=signedout]) #cSignedOut, body[data-mode=signedout] #cMain{display:none}
+  #contrib .card{padding:22px}
+  button.big{font-size:17px;padding:14px 28px;font-weight:600}
+  .center{justify-content:center}
+  .cinstr{font-size:14px;color:var(--muted);margin-bottom:14px}
+  .che{font-family:'Heebo',sans-serif;direction:rtl;text-align:right;font-size:24px;line-height:2.1;margin-bottom:14px}
+  .cen{font-size:17px;line-height:1.7;border-top:1px solid var(--line);padding-top:12px}
+  .cskip{text-decoration:line-through;text-decoration-thickness:2px;color:#b3261e;background:rgba(255,59,48,.08);border-radius:6px;padding:0 4px}
+  .cwrong{background:rgba(255,159,10,.22);border-bottom:2px dashed var(--amber);border-radius:4px;padding:0 3px}
+  .cbanner{background:rgba(255,159,10,.12);border:2px solid var(--amber);border-radius:12px;padding:12px 14px;margin-bottom:16px;font-size:15px;line-height:1.5}
+  .cbanner b{color:#9a6200}
+  .cdone{font-size:20px;font-weight:600;text-align:center;margin:8px 0}
   .hint{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.5}
 </style>
 </head>
-<body>
-<div class="wrap">
+<body data-mode="loading">
+<div class="wrap" id="loader"><div class="sub">Loading…</div></div>
+
+<!-- CONTRIBUTOR SCREEN: everyone who isn't the admin -->
+<div class="wrap" id="contrib">
+  <h1>Help train the Kriah grader</h1>
+  <div class="sub">You'll get a short passage in Hebrew or Aramaic with its English translation. Read it aloud the way a student would: read a phrase in Hebrew, say what it means in English, then go on to the next phrase. Each one takes about a minute.</div>
+  <div class="card" id="cSignedOut">
+    <div class="row center" style="margin-top:0"><button class="primary big" id="cSignIn">Sign in with Google to start</button></div>
+    <div class="hint" style="text-align:center">Sign-in only keeps track of who recorded what. Only the project owner hears the recordings.</div>
+  </div>
+  <div id="cMain">
+    <div class="card" id="cCard" style="display:none">
+      <div id="cBanner"></div>
+      <div class="cinstr" id="cInstr">Read each phrase in Hebrew, then say it in English.</div>
+      <div class="che" id="cHe"></div>
+      <div class="cen" id="cEn"></div>
+    </div>
+    <div class="cdone" id="cDone" style="display:none"></div>
+    <div class="row center">
+      <button class="primary big" id="cStart">Get a passage</button>
+      <button class="rec big" id="cRec" style="display:none">● Start recording</button>
+      <button id="cSkip" style="display:none">Skip this one</button>
+      <button class="primary big" id="cNext" style="display:none">Next passage →</button>
+    </div>
+    <div class="status" id="cStatus" style="text-align:center"></div>
+    <div class="hint" style="text-align:center;margin-top:40px"><span id="cCount"></span>Signed in as <span id="cWho"></span> · <a href="#" id="cOut">sign out</a></div>
+  </div>
+</div>
+
+<!-- ADMIN BENCH -->
+<div class="wrap" id="bench">
   <h1>Kriah Grading Test Bench</h1>
   <div class="sub">Record → OpenAI + Gemini race → closed-vocabulary judge → scores. Save runs as a regression set and re-run them after every prompt tweak.</div>
+
+  <!-- cloud: sign-in + shared data -->
+  <div class="card" style="padding:12px 18px">
+    <div class="row" style="margin-top:0;align-items:center">
+      <span class="status" id="cloudStatus" style="margin:0;flex:1">Connecting to cloud…</span>
+      <a href="kriah-data.html" target="_blank"><button>📊 All data</button></a>
+      <button id="btnSignIn" disabled>Sign in with Google</button>
+    </div>
+  </div>
+
+  <!-- contributor recordings to review -->
+  <div class="card">
+    <div class="step"><span class="stepnum" style="background:var(--blue)">★</span><span class="steptitle">Contributor recordings</span></div>
+    <div class="hint" style="margin-top:0">Everyone else gets the simple record-only screen. Their runs land here: load one to hear it, see how it was graded, and correct it below like your own.</div>
+    <div class="row">
+      <button id="btnQueue">Refresh</button>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;text-transform:none;letter-spacing:0;font-size:13px"><input type="checkbox" id="queueAll"> show reviewed</label>
+      <span class="status" id="queueStatus"></span>
+    </div>
+    <div id="queue"></div>
+    <div id="queueDetail"></div>
+  </div>
 
   <!-- STEP 0: setup -->
   <div class="card">
@@ -119,7 +195,7 @@
     </details>
     <details>
       <summary>Edit judging prompt template</summary>
-      <div class="hint">Placeholders: {KEY} {PAIRS} {TRANSCRIPT}. Tweak, then re-run the regression set below to see if the change helped or hurt.</div>
+      <div class="hint">Placeholders: {KEY} {PAIRS} {TRANSCRIPT} {LESSONS} (past human corrections — inserted before the JSON spec if the placeholder is missing). Tweak, then re-run the regression set below to see if the change helped or hurt.</div>
       <textarea id="promptTpl" rows="16" class="mono"></textarea>
     </details>
   </div>
@@ -137,6 +213,13 @@
       <button class="danger" id="btnClear">Clear set</button>
     </div>
     <div id="rerunOut"></div>
+    <label>Accuracy against human reviews (all testers)</label>
+    <div class="hint">Re-grades the most recent reviewed runs with the current prompt + everything learned so far, and compares to what the reviewers said. "Then" = the grader when the run was reviewed. Pronunciations learned from these same runs are included, so word accuracy here is optimistic; new recordings are the real test.</div>
+    <div class="row">
+      <button class="primary" id="btnAccuracy">Measure accuracy (up to 25 runs)</button>
+      <span class="status" id="accStatus"></span>
+    </div>
+    <div id="accOut"></div>
   </div>
 
   <!-- EXPERIMENTAL: nikkud (havara) checker — fully separate from grading -->
@@ -161,6 +244,10 @@ const KEEP_PROMPT = "This recording mixes English with Hebrew and Aramaic read a
 
 const $ = id => document.getElementById(id);
 let wordKey = null, wordKeyText = null, mediaRecorder = null, chunks = [], lastJudge = null, lastAudioBlob = null;
+let review = null, lastRunSave = null, currentRef = "";
+// When set, cloud saves update this existing run doc (a contributor's early-saved recording, or a run loaded for review).
+let targetRunId = null;
+const ADMIN_EMAILS = ["jhein1@mail.yu.edu"];   // keep in sync with storage.rules
 
 // ── deterministic reading aligner ─────────────────────────────────────────
 function alignNorm(s){return (s||"").toLowerCase().replace(/[’'`\-–—]/g,"").replace(/[^a-z]/g,"");}
@@ -186,7 +273,7 @@ function alignTokens(keyWords,tokens,threshold){
     if(dp[i][j]===-Infinity)continue;const cur=dp[i][j];
     if(i<K&&cur>dp[i+1][j]){dp[i+1][j]=cur;bt[i+1][j]=[i,j,"skipKey"];}
     if(j<T&&cur>dp[i][j+1]){dp[i][j+1]=cur;bt[i][j+1]=[i,j,"skipTok"];}
-    if(i<K&&j<T){const s=bestSim(keyWords[i].tr,tokens[j]);
+    if(i<K&&j<T&&!(keyWords[i].block||[]).includes(tokens[j])){const s=bestSim(keyWords[i].tr,tokens[j]);
       if(s>=threshold&&cur+s>dp[i+1][j+1]){dp[i+1][j+1]=cur+s;bt[i+1][j+1]=[i,j,"match",[i],s];}}
     if(i<K&&j+1<T){const s=bestSim(keyWords[i].tr,tokens[j]+tokens[j+1]);
       if(s>=threshold&&cur+s>dp[i+1][j+2]){dp[i+1][j+2]=cur+s;bt[i+1][j+2]=[i,j,"split",[i],s];}}
@@ -196,12 +283,12 @@ function alignTokens(keyWords,tokens,threshold){
       if(lenOk&&s>=Math.max(threshold,0.6)&&cur+2*s>dp[i+2][j+1]){dp[i+2][j+1]=cur+2*s;bt[i+2][j+1]=[i,j,"merge",[i,i+1],s];}}
   }
   let bj=0;for(let j=0;j<=T;j++)if(dp[K][j]>dp[K][bj])bj=j;
-  const matched=new Map();let i=K,j=bj;
+  const matched=new Map(),tok=new Map();let i=K,j=bj;
   while(i>0||j>0){const step=bt[i][j];if(!step)break;
     const[pi,pj,op,keyIdxs,s]=step;
-    if(op==="match"||op==="split"||op==="merge")keyIdxs.forEach(k=>matched.set(k,s));
+    if(op==="match"||op==="split"||op==="merge")keyIdxs.forEach(k=>{matched.set(k,s);tok.set(k,op==="split"?[pj,pj+1]:[pj]);});
     i=pi;j=pj;}
-  return matched;}
+  return {matched,tok};}
 const PREFIX_SOUNDS = {"ו":"v","ב":"b","ל":"l","מ":"mi","כ":"k","ה":"ha","ש":"she"};
 function applyShemOverrides(wordKey){
   return wordKey.map(w => {
@@ -224,7 +311,7 @@ function applyShemOverrides(wordKey){
 function alignReading(readingText,translationText,keyWords,opts={}){
   const threshold=opts.threshold??0.45,strict=opts.strict??0.72;
   const tokens=(readingText||"").split(/\s+/).map(alignNorm).filter(t=>t.length>0);
-  const matched=alignTokens(keyWords,tokens,threshold);
+  const {matched,tok}=alignTokens(keyWords,tokens,threshold);
   if(matched.size>0&&translationText){
     const tTokens=translationText.split(/\s+/).map(alignNorm).filter(Boolean);
     keyWords.map(w=>w.i).filter(i=>!matched.has(i)).forEach(i=>{
@@ -236,8 +323,8 @@ function alignReading(readingText,translationText,keyWords,opts={}){
   const matchedIdxs=[...matched.keys()].sort((a,b)=>a-b);
   const heScore=keyWords.length?Math.round(matchedIdxs.length/keyWords.length*100):100;
   const heReadLabel=matchedIdxs.length===keyWords.length?"read":matchedIdxs.length>0?"partial":"missing";
-  return{matched:matchedIdxs,heScore,heReadLabel,
-    perWord:keyWords.map(w=>({i:w.i,he:w.he,tr:w.tr,read:matched.has(w.i),confidence:matched.get(w.i)??0}))};}
+  return{matched:matchedIdxs,heScore,heReadLabel,tokens,
+    perWord:keyWords.map(w=>({i:w.i,he:w.he,tr:w.tr,read:matched.has(w.i),confidence:matched.get(w.i)??0,tok:tok.get(w.i)??null}))};}
 
 const DEFAULT_TPL = `A student read a Hebrew/Aramaic text aloud phrase by phrase, translating into English as they went. The recording was transcribed by an ENGLISH speech recognizer, so every Hebrew word appears as phonetic English gibberish (e.g. "may I'm a sigh coring is shema" for "mei'eimosai korin es shema"). The English translation parts are transcribed normally.
 
@@ -249,7 +336,7 @@ PHRASE PAIRS (the answer key):
 
 RAW TRANSCRIPT:
 "{TRANSCRIPT}"
-
+{LESSONS}
 Your task has two parts:
 
 1. SEGMENT the transcript in order into spans, each labeled "reading" or "translation":
@@ -269,6 +356,8 @@ $("promptTpl").value = localStorage.getItem("ktb_tpl") || DEFAULT_TPL;
 $("promptTpl").addEventListener("input", () => localStorage.setItem("ktb_tpl", $("promptTpl").value));
 
 function stripNikud(s){return s.replace(/[\u0591-\u05C7]/g,"").replace(/[^\u05D0-\u05EA\s]/g,"").trim();}
+// Learned pronunciations are keyed by the bare consonants of a word, so they carry across passages.
+const aliasId = he => stripNikud(he||"").replace(/\s/g,"");
 
 async function callClaude(user, system, max=4500){
   const r = await fetch(CLAUDE_URL,{method:"POST",headers:{"Content-Type":"application/json"},
@@ -356,24 +445,30 @@ async function fetchRef(){
   return {items, ref};
 }
 
+// Loads a random Sefaria passage into the reference fields. Returns {ref, words}.
+async function loadRandomPassage(maxWords=28){
+  let chosen=null, ref="", tries=0;
+  while(!chosen && tries<7){
+    tries++;
+    const {items, ref:r} = await fetchRef();
+    if(!items.length) continue;
+    const good = items.filter(x=>{ const n=x.he.split(/\s+/).length; return n>=4 && n<=maxWords; });
+    chosen = pick(good.length ? good : items); ref = r;
+  }
+  if(!chosen) throw new Error("No passage found after several tries — click again.");
+  $("heText").value = chosen.he;
+  $("enText").value = chosen.en;
+  $("pairsJson").value = "";
+  wordKey = null; $("keyOut").innerHTML=""; $("keyStatus").textContent="";
+  currentRef = ref; targetRunId = null;
+  return {ref, words: chosen.he.split(/\s+/).length};
+}
 $("btnRandom").onclick = async () => {
   $("btnRandom").disabled = true;
   $("randStatus").className="status"; $("randStatus").textContent="Fetching from Sefaria…";
   try{
-    let chosen=null, ref="", tries=0;
-    while(!chosen && tries<7){
-      tries++;
-      const {items, ref:r} = await fetchRef();
-      if(!items.length) continue;
-      const good = items.filter(x=>{ const n=x.he.split(/\s+/).length; return n>=4 && n<=28; });
-      chosen = pick(good.length ? good : items); ref = r;
-    }
-    if(!chosen) throw new Error("No passage found after several tries — click again.");
-    $("heText").value = chosen.he;
-    $("enText").value = chosen.en;
-    $("pairsJson").value = "";
-    wordKey = null; $("keyOut").innerHTML=""; $("keyStatus").textContent="";
-    $("randStatus").textContent = `Loaded ${ref} · ${chosen.he.split(/\s+/).length} words. Now build the word key.`;
+    const {ref, words} = await loadRandomPassage();
+    $("randStatus").textContent = `Loaded ${ref} · ${words} words. Now build the word key.`;
   }catch(e){ $("randStatus").className="status err"; $("randStatus").textContent="Sefaria fetch failed: "+e.message; }
   finally{ $("btnRandom").disabled=false; }
 };
@@ -426,13 +521,14 @@ $("btnRec").onclick = async () => {
       await transcribe(new Blob(chunks,{type:"audio/webm"}));
     };
     mediaRecorder.start();
+    targetRunId = null;
     ensureWordKey().catch(()=>{});   // build the key while the student reads
     $("btnRec").textContent="■ Stop"; $("btnRec").classList.add("rec");
     $("recStatus").className="status"; $("recStatus").textContent="Recording...";
   }catch(e){ $("recStatus").className="status err"; $("recStatus").textContent="Mic error: "+e.message; }
 };
 $("btnUpload").onclick = ()=>$("fileInput").click();
-$("fileInput").onchange = e => { if(e.target.files[0]){ ensureWordKey().catch(()=>{}); transcribe(e.target.files[0]); } };
+$("fileInput").onchange = e => { if(e.target.files[0]){ targetRunId = null; ensureWordKey().catch(()=>{}); transcribe(e.target.files[0]); } };
 
 async function transcribe(blob){
   lastAudioBlob = blob;               // retain audio for the experimental nikkud check
@@ -485,6 +581,11 @@ async function transcribe(blob){
   if(winner){
     $("transcript").value = winner.text;
     showHeadline(winner.res);   // winner's FULL result set becomes the bench headline
+    lastRunSave = saveRunToCloud(winner.res, {source:"recording", vendors: vendorSummary(vendors)}, blob);
+  } else if(targetRunId && window.kbStore?.user()){
+    // keep the recording's doc, just mark that grading failed so it shows up for review
+    const id = targetRunId;
+    lastRunSave = window.kbStore.updateRun(id, {status:"failed", vendors: vendorSummary(vendors)}).then(()=>id).catch(e=>{ console.error(e); return null; });
   }
   renderAbPanel(vendors);
   const fmt = v => v.scored==="ok" ? `He ${v.he}/En ${v.en}` : (v.ok ? "score failed" : "failed");
@@ -494,11 +595,15 @@ async function transcribe(blob){
     : "Both transcripts failed to score.";
 }
 
+function vendorSummary(vendors){
+  return vendors.map(v=>({name:v.name, ok:v.ok, text:v.text, err:v.ok?null:v.err, he:v.he??null, en:v.en??null, score:v.score??null, win:!!v.win}));
+}
 // Push a judge result to the bench's main headline (scores, per-pair breakdown, debug).
 function showHeadline(res){
   if(!res) return;
-  renderResults(res);
   lastJudge = res;
+  initReview(res);
+  renderResults(res);
   $("debugOut").value = buildDebugReport(res);
   $("btnDebug").disabled = false;
   $("debugWrap").style.display = "block";
@@ -588,19 +693,40 @@ async function getIndexedPairs(){
     return {idx,he:p.he,en:p.en,wordIdxs:idxs};
   });
 }
-async function buildPrompt(transcript){
-  const ip = await getIndexedPairs();
-  return { prompt: $("promptTpl").value
-    .replace("{KEY}", wordKey.map(w=>`${w.i}. ${w.he} — "${w.tr}"`).join("\n"))
+// Past human corrections of translation verdicts, fed back to the judge as calibration examples.
+function lessonsBlock(lessons){
+  if(!lessons || !lessons.length) return "";
+  return "\nPAST GRADING MISTAKES (a human reviewer corrected these verdicts from earlier runs — calibrate to them):\n" +
+    lessons.map(l=>`- key: "${l.pairEn}" | student said: "${l.transHeard||""}" | grader said: ${l.modelVerdict} | correct: ${l.correctVerdict}`).join("\n") + "\n";
+}
+function buildPrompt(transcript, wk, ip, lessons){
+  let tpl = $("promptTpl").value;
+  const lb = lessonsBlock(lessons);
+  if(!tpl.includes("{LESSONS}")){
+    const at = tpl.indexOf("Return ONLY JSON");
+    tpl = at === -1 ? tpl + lb : tpl.slice(0, at) + lb + "\n" + tpl.slice(at);
+  } else tpl = tpl.replace("{LESSONS}", lb);
+  return tpl
+    .replace("{KEY}", wk.map(w=>`${w.i}. ${w.he} — "${w.tr}"`).join("\n"))
     .replace("{PAIRS}", ip.map(p=>`${p.idx}. he: "${p.he}" (words ${p.wordIdxs.join(",")}) → en: "${p.en}"`).join("\n"))
-    .replace("{TRANSCRIPT}", transcript), ip };
+    .replace("{TRANSCRIPT}", transcript);
 }
 const JUDGE_SYSTEM = "You are a precise kriah grading engine. Segment the transcript into reading vs translation spans and judge translation per phrase pair. Output ONLY valid JSON.";
 const JUDGE_MODEL = "claude-sonnet-4-6", JUDGE_MAXTOK = 4500;
-async function judge(transcript){
-  await ensureWordKey();
-  if(!wordKey) throw new Error("No word key — check the Hebrew reference text.");
-  const {prompt, ip} = await buildPrompt(transcript);
+// ctx (optional) = {wordKey, ip, excludeRunId} to re-judge a stored run instead of what's on screen.
+async function judge(transcript, ctx){
+  let wk, ip;
+  if(ctx){ wk = ctx.wordKey; ip = ctx.ip; }
+  else {
+    await ensureWordKey();
+    if(!wordKey) throw new Error("No word key — check the Hebrew reference text.");
+    wk = wordKey; ip = await getIndexedPairs();
+  }
+  // Learned data (signed in only): extra pronunciations / blocked tokens per word, and past translation corrections.
+  let learned = null;
+  try{ learned = await window.kbStore?.learned(wk, ctx?.excludeRunId); }catch(e){ console.warn("learned data unavailable", e); }
+  const lessons = learned?.lessons || [];
+  const prompt = buildPrompt(transcript, wk, ip, lessons);
   const raw = await callClaude(prompt, JUDGE_SYSTEM, JUDGE_MAXTOK);
   const judged = parseJson(raw);
   if (!Array.isArray(judged.pairs) || !Array.isArray(judged.segments)) {
@@ -609,7 +735,14 @@ async function judge(transcript){
   }
   const readingText = judged.segments.filter(s => s.type === "reading").map(s => s.text).join(" ");
   const translationText = judged.segments.filter(s => s.type === "translation").map(s => s.text).join(" ");
-  const align = alignReading(readingText, translationText, applyShemOverrides(wordKey));
+  const baseKey = applyShemOverrides(wk);
+  const alignKey = baseKey.map(w => {
+    const a = learned?.aliases?.[aliasId(w.he)];
+    if(!a) return w;
+    const trs = Array.isArray(w.tr) ? w.tr : [w.tr];
+    return {...w, tr: [...new Set([...trs, ...a.extra])], block: a.block};
+  });
+  const align = alignReading(readingText, translationText, alignKey);
   const heScore = align.heScore;
   // verify translation verdicts against the actual transcript — unsupported evidence = missing
 const normText = s => (s||"").toLowerCase().replace(/[^a-z\s]/g," ").replace(/\s+/g," ").trim();
@@ -623,7 +756,8 @@ judged.pairs.forEach(p => {
 });
   const w = {matched:1,partial:.5,missing:0};
   const enScore = Math.round(judged.pairs.reduce((s,p)=>s+(w[p.translation]??0),0)/(judged.pairs.length||1)*100);
-  return {judged, ip, heScore, enScore, align, readingText, translationText, prompt, system:JUDGE_SYSTEM, raw, transcript, matched:align.matched, weights:w};
+  return {judged, ip, wk, heScore, enScore, align, readingText, translationText, prompt, system:JUDGE_SYSTEM, raw, transcript, matched:align.matched, weights:w,
+    lessonsUsed: lessons.length, aliasesUsed: alignKey.filter((x,k)=>x !== baseKey[k]).length};
 }
 
 $("btnJudge").onclick = async () => {
@@ -632,44 +766,143 @@ $("btnJudge").onclick = async () => {
   $("judgeStatus").className="status"; $("judgeStatus").textContent="Judging...";
   try{
     const res = await judge(t);
-    renderResults(res);
-    lastJudge = res;
-    $("debugOut").value = buildDebugReport(res);
-    $("btnDebug").disabled = false;
-    $("debugWrap").style.display = "block";
+    showHeadline(res);
+    lastRunSave = saveRunToCloud(res, {source:"manual"}, null);
     $("judgeStatus").textContent="Done.";
   }catch(e){ $("judgeStatus").className="status err"; $("judgeStatus").textContent=e.message; }
 };
 $("btnCopy").onclick = async () => {
   if(!wordKey){ $("judgeStatus").textContent="Build the word key first."; return; }
-  const {prompt} = await buildPrompt($("transcript").value.trim());
-  navigator.clipboard.writeText(prompt);
+  const ip = await getIndexedPairs();
+  let lessons = [];
+  try{ lessons = (await window.kbStore?.learned(wordKey))?.lessons || []; }catch{}
+  navigator.clipboard.writeText(buildPrompt($("transcript").value.trim(), wordKey, ip, lessons));
   $("judgeStatus").textContent="Prompt copied — paste it into claude.ai to eyeball the judging.";
 };
 
-function pairKriah(align, wordIdxs){
-  if(!align || !Array.isArray(wordIdxs) || !wordIdxs.length) return null;
-  const m = wordIdxs.filter(i=>align.matched.includes(i)).length;
+// ── human review: the reviewer's verdicts start as the grader's and get flipped where it was wrong
+const TRANS_CYCLE = {matched:"partial", partial:"missing", missing:"matched"};
+function initReview(res){
+  review = { read: res.align.perWord.map(w=>w.read), trans: {}, notes: "", saved: false };
+  res.judged.pairs.forEach(p => { review.trans[p.idx] = p.translation; });
+}
+function pairKriah(read, wordIdxs){
+  if(!Array.isArray(wordIdxs) || !wordIdxs.length) return null;
+  const m = wordIdxs.filter(i=>read[i]).length;
   return m===wordIdxs.length ? "read" : m>0 ? "partial" : "missing";
 }
-function renderResults({judged, ip, heScore, enScore, align}){
+function renderResults(res){
+  const {judged, ip, heScore, enScore, align} = res;
+  const w = {matched:1,partial:.5,missing:0};
+  const youHe = Math.round(review.read.filter(Boolean).length/(review.read.length||1)*100);
+  const youEn = Math.round(judged.pairs.reduce((s,p)=>s+(w[review.trans[p.idx]]??0),0)/(judged.pairs.length||1)*100);
+  const nW = align.perWord.filter((x,k)=>review.read[k]!==x.read).length;
+  const nT = judged.pairs.filter(p=>review.trans[p.idx]!==p.translation).length;
   const pairHtml = judged.pairs.map(p=>{
     const ref = ip[p.idx]||{};
-    const kr = pairKriah(align, ref.wordIdxs) || p.heRead || "missing";
+    const kr = pairKriah(review.read, ref.wordIdxs) || p.heRead || "missing";
+    const t = review.trans[p.idx], tChanged = t !== p.translation;
     return `<div class="pairrow">
       <div class="heline">${ref.he||""}</div>
       <div class="enline">${ref.en||""}</div>
       <span class="pill ${kr}">kriah: ${kr}</span>
-      <span class="pill ${p.translation}">translation: ${p.translation}</span>
+      <button class="pill ${t}${tChanged?" changed":""} tpill" data-p="${p.idx}" title="Tap to correct — grader said ${p.translation}">translation: ${t}${tChanged?" ✎":""}</button>
       <div class="heard">heard: "${p.heard||""}" → "${p.transHeard||""}"</div>
     </div>`;
   }).join("");
+  const chips = align.perWord.map((x,k)=>{
+    const r = review.read[k];
+    return `<button class="wchip ${r?"read":"missing"}${r!==x.read?" changed":""}" data-w="${k}" title="grader: ${x.read?"read":"not read"} (confidence ${x.confidence.toFixed(2)})">${x.he}</button>`;
+  }).join("");
+  const corrected = nW || nT;
   $("results").innerHTML = `
     <div class="scores">
-      <div class="scorebox"><div class="n">${heScore}</div><div class="l">Hebrew read</div></div>
-      <div class="scorebox"><div class="n">${enScore}</div><div class="l">Translation</div></div>
+      <div class="scorebox"><div class="n">${heScore}${nW?` → ${youHe}`:""}</div><div class="l">Hebrew read${nW?" (grader → you)":""}</div></div>
+      <div class="scorebox"><div class="n">${enScore}${nT?` → ${youEn}`:""}</div><div class="l">Translation${nT?" (grader → you)":""}</div></div>
     </div>${pairHtml}
+    <div class="review">
+      <label>Review: tap anything the grader got wrong</label>
+      <div class="hint">Green = counted as read. Tap a word to flip it. Translation pills cycle matched → partial → missing. Corrected items get an orange ring. Saving teaches the grader: corrected words become learned pronunciations, and corrected translations become examples for the judge.</div>
+      <div class="wchips">${chips}</div>
+      <textarea id="reviewNotes" rows="2" placeholder="Notes (optional): what you actually did, anything else it missed"></textarea>
+      <div class="row">
+        <button class="primary" id="btnReview"${review.saved?" disabled":""}>${review.saved?"Review saved ✓":corrected?`Save review (${nW+nT} correction${nW+nT===1?"":"s"})`:"Looks right ✓ save review"}</button>
+        <span class="status" id="reviewStatus"></span>
+      </div>
+    </div>
     <details><summary>Raw JSON</summary><div class="mono">${JSON.stringify(judged,null,2).replace(/</g,"&lt;")}</div></details>`;
+  $("reviewNotes").value = review.notes;
+  $("reviewNotes").addEventListener("input", e => { review.notes = e.target.value; });
+  if(review.saved) return;
+  document.querySelectorAll(".wchip").forEach(b => b.onclick = () => { review.read[+b.dataset.w] = !review.read[+b.dataset.w]; renderResults(res); });
+  document.querySelectorAll(".tpill").forEach(b => b.onclick = () => { const i = +b.dataset.p; review.trans[i] = TRANS_CYCLE[review.trans[i]] || "matched"; renderResults(res); });
+  $("btnReview").onclick = () => saveReview(res);
+}
+
+// ── cloud persistence (window.kbStore comes from the Firebase module at the bottom) ──
+function hashStr(s){ let h = 0; for(let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) | 0; return (h>>>0).toString(36); }
+function runPayload(res){
+  return {
+    heText: $("heText").value.trim(), enText: $("enText").value.trim(), refLabel: currentRef,
+    wordKey: res.wk, ip: res.ip, transcript: res.transcript, readingText: res.readingText, translationText: res.translationText,
+    judged: res.judged, raw: res.raw, heScore: res.heScore, enScore: res.enScore,
+    perWord: res.align.perWord.map(x => ({i:x.i, he:x.he, tr:x.tr, read:x.read, confidence:x.confidence, tok:x.tok})),
+    tokens: res.align.tokens || [],
+    tplHash: hashStr($("promptTpl").value), judgeModel: JUDGE_MODEL, lessonsUsed: res.lessonsUsed||0, aliasesUsed: res.aliasesUsed||0,
+  };
+}
+async function saveRunToCloud(res, extra, audio){
+  if(!window.kbStore?.user()) return null;
+  try{
+    if(targetRunId){ await window.kbStore.updateRun(targetRunId, {...runPayload(res), ...extra}); return targetRunId; }
+    return await window.kbStore.saveRun({...runPayload(res), ...extra}, audio);
+  }
+  catch(e){ console.error("cloud save failed", e); $("cloudStatus").textContent = "⚠ Cloud save failed: " + e.message; return null; }
+}
+// Turn word corrections into pronunciation votes. Missed word → the transcript token(s) between its
+// neighbours that sound most like it count as a "yes" for that word. False match → the token it matched is a "no".
+function aliasVotes(res){
+  const pw = res.align.perWord, toks = res.align.tokens || [], byId = {};
+  const vote = (he, token, kind) => {
+    const id = aliasId(he); if(!id || !token) return;
+    const v = byId[id] ||= {id, he, yes:{}, no:{}};
+    v[kind][token] = (v[kind][token]||0) + 1;
+  };
+  pw.forEach((x,k) => {
+    if(review.read[k] === x.read) return;
+    if(!review.read[k]){ if(x.tok) vote(x.he, x.tok.map(j=>toks[j]).join(""), "no"); return; }
+    let lo = 0, hi = toks.length - 1, boundedL = false, boundedR = false;
+    for(let q=k-1;q>=0;q--) if(pw[q].tok && review.read[q]){ lo = Math.max(...pw[q].tok)+1; boundedL = q===k-1; break; }
+    for(let q=k+1;q<pw.length;q++) if(pw[q].tok && review.read[q]){ hi = Math.min(...pw[q].tok)-1; boundedR = q===k+1; break; }
+    // Both direct neighbours matched with a 1–2 token gap: that gap IS how the word was heard, however mangled.
+    if(boundedL && boundedR && hi >= lo && hi - lo <= 1){ vote(x.he, toks.slice(lo, hi+1).join(""), "yes"); return; }
+    let best = null;
+    for(let j=lo;j<=hi;j++) for(const c of [toks[j], j<hi ? toks[j]+toks[j+1] : null]){
+      if(!c) continue;
+      const sc = bestSim(x.tr, c);
+      if(!best || sc > best.sc) best = {c, sc};
+    }
+    if(best && best.sc >= 0.3) vote(x.he, best.c, "yes");
+  });
+  return Object.values(byId);
+}
+async function saveReview(res){
+  const st = $("reviewStatus");
+  if(!window.kbStore?.user()){ st.className="status err"; st.textContent="Sign in (top of page) to save reviews."; return; }
+  st.className="status"; st.textContent="Saving…"; $("btnReview").disabled = true;
+  try{
+    let runId = await (lastRunSave || Promise.resolve(null));
+    if(!runId) runId = lastRunSave = await window.kbStore.saveRun({...runPayload(res), source:"manual"}, null);
+    const lessons = res.judged.pairs.filter(p => review.trans[p.idx] !== p.translation).map(p => ({
+      pairHe: res.ip[p.idx]?.he||"", pairEn: res.ip[p.idx]?.en||"", transHeard: p.transHeard||"",
+      modelVerdict: p.translation, correctVerdict: review.trans[p.idx] }));
+    const votes = aliasVotes(res);
+    await window.kbStore.saveReview(runId, runPayload(res),
+      {read: review.read, trans: review.trans, notes: review.notes.trim()}, lessons, votes);
+    review.saved = true;
+    renderResults(res);
+    $("reviewStatus").textContent = `Saved. Learned ${votes.length} pronunciation${votes.length===1?"":"s"} and ${lessons.length} translation correction${lessons.length===1?"":"s"}.`;
+  }catch(e){ console.error(e); st.className="status err"; st.textContent="Save failed: "+e.message; $("btnReview").disabled = false; }
 }
 
 // ── full debug report ───────────────────────────────────────────────────────
@@ -799,6 +1032,204 @@ $("btnRerun").onclick = async () => {
     $("rerunOut").innerHTML = rows.join("");
   }
 };
+$("btnAccuracy").onclick = async () => {
+  const st = $("accStatus");
+  if(!window.kbStore?.user()){ st.className="status err"; st.textContent="Sign in first."; return; }
+  st.className="status"; st.textContent="Loading reviewed runs…"; $("btnAccuracy").disabled = true;
+  const blank = () => ({thenW:0, nowW:0, nW:0, thenT:0, nowT:0, nT:0});
+  const tally = blank(), groups = {}, rows = [];
+  const GROUP = r => r.mode !== "contributor" ? "Your own runs" : (r.expected?.scenario||"correct") === "correct" ? "Contributors: correct reads" : "Contributors: deliberate mistakes";
+  const pct = (a,n) => n ? Math.round(a/n*100)+"%" : "—";
+  try{
+    const runs = await window.kbStore.reviewedRuns(25);
+    if(!runs.length){ st.textContent="No reviewed runs yet — review a few results first."; return; }
+    for(const [n, run] of runs.entries()){
+      st.textContent = `Re-grading ${n+1}/${runs.length}…`;
+      const r = {thenW:0, nowW:0, nW:0, thenT:0, nowT:0, nT:0};
+      try{
+        const res = await judge(run.transcript, {wordKey: run.wordKey, ip: run.ip, excludeRunId: run.id});
+        const truth = run.review.read || [];
+        truth.forEach((t,k) => { r.nW++; if((run.perWord[k]?.read??false)===t) r.thenW++; if((res.align.perWord[k]?.read??false)===t) r.nowW++; });
+        const thenP = Object.fromEntries((run.judged?.pairs||[]).map(p=>[p.idx,p.translation]));
+        const nowP = Object.fromEntries(res.judged.pairs.map(p=>[p.idx,p.translation]));
+        Object.entries(run.review.trans||{}).forEach(([i,t]) => { r.nT++; if(thenP[i]===t) r.thenT++; if(nowP[i]===t) r.nowT++; });
+        const g = groups[GROUP(run)] ||= blank();
+        Object.keys(tally).forEach(k => { tally[k] += r[k]; g[k] += r[k]; });
+        rows.push(`<div class="runrow"><span class="rl">${(run.refLabel||run.heText.split(/\s+/).slice(0,3).join(" ")).replace(/</g,"&lt;")}</span><span class="rs">${(run.email||"").replace(/</g,"&lt;")}</span><span>words ${pct(r.thenW,r.nW)} → <b>${pct(r.nowW,r.nW)}</b></span><span>trans ${pct(r.thenT,r.nT)} → <b>${pct(r.nowT,r.nT)}</b></span></div>`);
+      }catch(e){ rows.push(`<div class="runrow"><span class="rl">${run.refLabel||run.id}</span><span style="color:var(--red)">${e.message}</span></div>`); }
+      $("accOut").innerHTML = rows.join("");
+    }
+    const box = (t, label) => `<div class="scores">
+      <div class="scorebox"><div class="n">${pct(t.thenW,t.nW)} → ${pct(t.nowW,t.nW)}</div><div class="l">${label}: words (${t.nW})</div></div>
+      <div class="scorebox"><div class="n">${pct(t.thenT,t.nT)} → ${pct(t.nowT,t.nT)}</div><div class="l">${label}: translation (${t.nT} pairs)</div></div>
+    </div>`;
+    $("accOut").innerHTML = box(tally, "All") + Object.entries(groups).map(([k,t]) => box(t, k)).join("") + rows.join("");
+    st.textContent = `Done — ${runs.length} reviewed runs.`;
+  }catch(e){ st.className="status err"; st.textContent=e.message; }
+  finally{ $("btnAccuracy").disabled = false; }
+};
+// ── contributor flow: get passage → (maybe a deliberate-mistake task) → record → save audio → grade silently ──
+// Scenarios carry their own ground truth in `expected`, so incorrect readings are labelled before anyone reviews them.
+const esc = t => String(t||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+let cRecorder = null, cChunks = [], cExpected = null, cStartedAt = 0;
+function cShow(state, msg){
+  const vis = {cStart:["idle"], cRec:["ready","recording"], cSkip:["ready"], cNext:["done"]};
+  Object.entries(vis).forEach(([id, states]) => { $(id).style.display = states.includes(state) ? "" : "none"; });
+  $("cCard").style.display = ["ready","recording","processing"].includes(state) ? "" : "none";
+  $("cDone").style.display = state==="done" ? "" : "none";
+  $("cRec").textContent = state==="recording" ? "■ Stop recording" : "● Start recording";
+  $("cStatus").className = "status" + (state==="error" ? " err" : "");
+  $("cStatus").textContent = msg || "";
+  if(state==="error") $("cStart").style.display = "";
+}
+async function makeWrongTranslations(pairs, idxs){
+  const raw = await callClaude(
+`These are phrase pairs from a Hebrew/Aramaic text with English translations:
+${pairs.map((p,i)=>`${i}. he: "${p.he}" → en: "${p.en}"`).join("\n")}
+
+For pair(s) ${idxs.join(", ")} ONLY, write a plausible-sounding but clearly WRONG English translation. Change one key concept (who, what, when, how many, or negate it) so a grader should mark it incorrect. Keep a similar length and style.
+
+Return ONLY JSON: [{"idx":0,"en":"..."}]`,
+    "You write deliberately incorrect translations for testing a grader. Output ONLY valid JSON.", 800);
+  const out = parseJson(raw);
+  return idxs.map(i => out.find(o => o.idx === i)?.en).every(Boolean) ? out : null;
+}
+async function contribPrepare(){
+  cShow("preparing", "Finding a passage…");
+  try{
+    await loadRandomPassage(20);
+    cShow("preparing", "Getting it ready…");
+    await ensureWordKey();
+    const ip = await getIndexedPairs();
+    const pairs = ip.map(p => ({he:p.he, en:p.en}));
+    $("pairsJson").value = JSON.stringify(pairs);   // freeze the pairs so grading matches what was shown
+    const shown = pairs.map(p => ({...p, mark:null}));
+    cExpected = {scenario:"correct"};
+    const roll = Math.random();
+    if(ip.length >= 2 && roll < 0.25){
+      const i = rint(ip.length);
+      shown[i].mark = "skip";
+      cExpected = {scenario:"skipPhrase", skipPairs:[i], skipWords: ip[i].wordIdxs};
+    } else if(ip.length >= 2 && roll < 0.5){
+      const idxs = ip.length >= 4 ? [...new Set([rint(ip.length), rint(ip.length)])] : [rint(ip.length)];
+      const wrong = await makeWrongTranslations(pairs, idxs).catch(() => null);
+      if(wrong){
+        const shownEn = {};
+        idxs.forEach(i => { shown[i].en = wrong.find(o => o.idx === i).en; shown[i].mark = "wrong"; shownEn[i] = shown[i].en; });
+        cExpected = {scenario:"wrongTranslation", wrongPairs: idxs, shownEn};
+      }
+    }
+    $("cBanner").innerHTML =
+      cExpected.scenario === "skipPhrase" ? `<div class="cbanner"><b>⚠ Testing passage: make a mistake on purpose.</b><br>Skip the <span class="cskip">crossed-out</span> phrase completely. Don't read it and don't translate it. Do everything else normally.</div>`
+    : cExpected.scenario === "wrongTranslation" ? `<div class="cbanner"><b>⚠ Testing passage: the <span class="cwrong">highlighted</span> English is WRONG on purpose.</b><br>It is not the real meaning. Please say it exactly as written anyway. We're checking that the grader catches the mistake.</div>`
+    : "";
+    $("cHe").innerHTML = shown.map(p => p.mark === "skip" ? `<span class="cskip">${esc(p.he)}</span>` : esc(p.he)).join(" ");
+    $("cEn").innerHTML = shown.map(p => p.mark ? `<span class="${p.mark === "skip" ? "cskip" : "cwrong"}">${esc(p.en)}</span>` : esc(p.en)).join(" ");
+    cShow("ready", "Press record when you're ready. Press stop when you're done.");
+  }catch(e){ console.error(e); cShow("error", "Couldn't load a passage: " + e.message); }
+}
+$("cStart").onclick = contribPrepare;
+$("cSkip").onclick = contribPrepare;
+$("cNext").onclick = contribPrepare;
+$("cSignIn").onclick = () => window.kbStore?.signIn();
+$("cOut").onclick = e => { e.preventDefault(); window.kbStore?.signOut(); };
+$("cRec").onclick = async () => {
+  if(cRecorder && cRecorder.state === "recording"){ cRecorder.stop(); return; }
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    cRecorder = new MediaRecorder(stream); cChunks = [];
+    cRecorder.ondataavailable = e => cChunks.push(e.data);
+    cRecorder.onstop = () => { stream.getTracks().forEach(t => t.stop()); contribSubmit(new Blob(cChunks, {type:"audio/webm"})); };
+    cRecorder.start(); cStartedAt = Date.now();
+    cShow("recording", "Recording… read each phrase in Hebrew, then in English.");
+  }catch(e){ cShow("ready", "Couldn't use the microphone: " + e.message); }
+};
+async function contribSubmit(blob){
+  if(Date.now() - cStartedAt < 3000){ cShow("ready", "That was very short. Try recording again."); return; }
+  cShow("processing", "Saving your recording…");
+  try{
+    // Save the audio first so nothing is lost even if grading fails or the tab closes.
+    targetRunId = await window.kbStore.saveRun({
+      mode:"contributor", status:"processing", source:"recording",
+      heText: $("heText").value.trim(), enText: $("enText").value.trim(), refLabel: currentRef,
+      wordKey, ip: await getIndexedPairs(), expected: cExpected }, blob);
+    cShow("processing", "Saved ✓. Finishing up, about 20 seconds… please keep this page open.");
+    await transcribe(blob);
+    await lastRunSave;
+    try{ localStorage.setItem("ktb_contrib_count", String(+(localStorage.getItem("ktb_contrib_count")||0) + 1)); }catch{}
+    contribCount();
+    $("cDone").textContent = "✓ Thank you! Recording saved.";
+    cShow("done", "");
+  }catch(e){ console.error(e); cShow("error", "Something went wrong saving: " + e.message); }
+  finally{ targetRunId = null; }
+}
+function contribCount(){
+  let n = 0; try{ n = +(localStorage.getItem("ktb_contrib_count")||0); }catch{}
+  $("cCount").textContent = n ? `You've recorded ${n} passage${n===1?"":"s"} · ` : "";
+}
+window.onKbAuth = u => { $("cWho").textContent = u?.email || ""; contribCount(); };
+
+// ── admin: queue of contributor runs ──
+const SCENARIO_LABEL = {correct:"correct read", skipPhrase:"⚠ told to skip a phrase", wrongTranslation:"⚠ told to translate wrong"};
+let queueRuns = [];
+async function loadQueue(){
+  const st = $("queueStatus");
+  st.className = "status"; st.textContent = "Loading…";
+  try{
+    queueRuns = (await window.kbStore.recentRuns(100)).filter(r => r.mode === "contributor" && ($("queueAll").checked || !r.reviewed));
+    st.textContent = queueRuns.length ? `${queueRuns.length} run${queueRuns.length===1?"":"s"}` : "Nothing waiting for review.";
+    $("queue").innerHTML = queueRuns.map((r,i) => {
+      const when = r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) : "";
+      const sc = r.expected?.scenario || "correct";
+      return `<div class="runrow"><span class="rl">${esc(r.name || r.email)}</span>
+        <span class="pill ${sc==="correct"?"matched":"partial"}">${SCENARIO_LABEL[sc]||sc}</span>
+        <span class="rs">${esc(when)} · ${esc(r.refLabel)} · ${r.status==="graded" ? `He ${r.heScore} / En ${r.enScore}` : esc(r.status)}${r.reviewed?" · ✓ reviewed":""}</span>
+        <button data-q="${i}" class="qLoad">Load</button></div>`;
+    }).join("");
+    document.querySelectorAll(".qLoad").forEach(b => b.onclick = () => loadRunForReview(queueRuns[+b.dataset.q]));
+  }catch(e){ st.className = "status err"; st.textContent = e.message; }
+}
+$("btnQueue").onclick = loadQueue;
+$("queueAll").onchange = loadQueue;
+async function loadRunForReview(run){
+  $("heText").value = run.heText || ""; $("enText").value = run.enText || "";
+  $("pairsJson").value = JSON.stringify((run.ip||[]).map(p => ({he:p.he, en:p.en})));
+  $("transcript").value = run.transcript || "";
+  currentRef = run.refLabel || "";
+  wordKey = run.wordKey || null; wordKeyText = wordKey ? $("heText").value.trim() : null;
+  if(wordKey) renderKey();
+  updateNikkudBtn();
+  const x = run.expected || {scenario:"correct"}, ip = run.ip || [];
+  const told = x.scenario === "skipPhrase" ? `Told to <b>skip</b>: ${x.skipPairs.map(i => `<span class="he">${esc(ip[i]?.he)}</span>`).join(", ")}. Those words should be not read and the translation missing.`
+    : x.scenario === "wrongTranslation" ? `Told to <b>translate wrong</b>: ${x.wrongPairs.map(i => `pair ${i}: said "${esc(x.shownEn[i])}" instead of "${esc(ip[i]?.en)}"`).join("; ")}. Those translations should not be matched.`
+    : "Told to read and translate normally.";
+  $("queueDetail").innerHTML = `<div class="pairrow" style="margin-top:12px">
+      <div><b>${esc(run.name || run.email)}</b> · ${esc(run.refLabel)} · status: ${esc(run.status)}</div>
+      <div class="hint">${told} Listen, then correct the grading in step 3 below; anything the contributor did differently from the instructions, just mark what they actually did.</div>
+      <audio controls style="width:100%;margin-top:8px" id="qAudio"></audio>
+      ${(run.vendors||[]).map(v => `<div class="heard" style="margin-top:6px">${v.win?"🏆 ":""}${esc(v.name)}: ${esc(v.ok ? v.text : "[failed] "+v.err)}</div>`).join("")}
+    </div>`;
+  if(run.audioPath) window.kbStore.audioUrl(run.audioPath).then(u => { const a = $("qAudio"); if(a) a.src = u; }).catch(e => console.warn(e));
+  targetRunId = run.id;
+  lastRunSave = Promise.resolve(run.id);
+  if(run.judged && run.perWord){
+    const res = {judged: run.judged, ip, wk: run.wordKey, heScore: run.heScore, enScore: run.enScore,
+      transcript: run.transcript, readingText: run.readingText||"", translationText: run.translationText||"", raw: run.raw||"",
+      prompt: "(not stored — re-run the judge to regenerate)", system: JUDGE_SYSTEM, weights: {matched:1,partial:.5,missing:0},
+      lessonsUsed: run.lessonsUsed||0, aliasesUsed: run.aliasesUsed||0,
+      align: {perWord: run.perWord, tokens: run.tokens||[], matched: run.perWord.filter(w => w.read).map(w => w.i), heScore: run.heScore},
+      matched: run.perWord.filter(w => w.read).map(w => w.i)};
+    showHeadline(res);
+    if(run.reviewed && run.review){
+      review.read = run.review.read; review.trans = run.review.trans; review.notes = run.review.notes || ""; review.saved = true;
+      renderResults(res);
+    }
+  } else {
+    $("results").innerHTML = `<div class="hint">This run wasn't graded (status: ${esc(run.status)}). Fix the transcript above if needed, then press Run judge; the result is saved back onto this run.</div>`;
+  }
+  $("results").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
 // ── experimental nikkud (havara) checker — fully separate from grading ──────
 // Reads only lastAudioBlob + heText; never touches He/En scores, transcripts,
 // regression runs, or the vendor race.
@@ -855,11 +1286,147 @@ function renderNikkud(parsed, raw){
   $("nikkudOut").innerHTML = caveat +
     `<table class="keytable"><tr><td style="color:var(--muted)">Word</td><td style="color:var(--muted)">Read as</td><td style="color:var(--muted)">Vowels / stress</td></tr>${rows}</table>`;
 }
-$("heText").addEventListener("input", updateNikkudBtn);
+$("heText").addEventListener("input", () => { currentRef = ""; targetRunId = null; updateNikkudBtn(); });
 
 renderRuns();
 updateNikkudBtn();
 ensureWordKey().catch(()=>{});   // pre-build the key for the pre-filled reference text on load
+</script>
+<script type="module">
+// ── shared cloud store: every run, human reviews, learned pronunciations, translation corrections ──
+// Collections: kriahBenchRuns (one doc per graded run, + review once a human checks it),
+//              kriahBenchAliases (per bare-consonant word: yes/no vote counts per heard token),
+//              kriahBenchLessons (corrected translation verdicts fed back into the judge prompt).
+// Audio: storage kriah-bench/{uid}/{runId}.{ext}
+const V = "12.10.0", G = `https://www.gstatic.com/firebasejs/${V}`;
+try{
+const { initializeApp } = await import(`${G}/firebase-app.js`);
+const { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } = await import(`${G}/firebase-auth.js`);
+const { initializeFirestore, collection, doc, addDoc, updateDoc, getDoc, getDocs, query, where, orderBy, limit,
+        serverTimestamp, increment, writeBatch, getCountFromServer } = await import(`${G}/firebase-firestore.js`);
+const { getStorage, ref, uploadBytes, getDownloadURL } = await import(`${G}/firebase-storage.js`);
+
+const app = initializeApp({
+  apiKey: "AIzaSyAJ4PiCzf5cMhp1FCEv1EA478rlC1H9FOU",
+  authDomain: "kitzur-app1.firebaseapp.com",
+  projectId: "kitzur-app1",
+  storageBucket: "kitzur-app1.firebasestorage.app",
+  messagingSenderId: "603995451341",
+  appId: "1:603995451341:web:61f543cfdb200891381e84",
+});
+const auth = getAuth(app);
+const db = initializeFirestore(app, { ignoreUndefinedProperties: true });
+const storage = getStorage(app);
+const RUNS = collection(db, "kriahBenchRuns"), LESSONS = collection(db, "kriahBenchLessons");
+let cache = null;   // learned data, cleared whenever a review is saved
+
+function digest(d){
+  const yes = d.yes || {}, no = d.no || {};
+  const extra = Object.keys(yes).filter(t => yes[t] > (no[t]||0));
+  const block = Object.keys(no).filter(t => no[t] > (yes[t]||0));
+  return extra.length || block.length ? {extra, block} : null;
+}
+
+async function refreshStats(){
+  const st = document.getElementById("cloudStatus"), u = auth.currentUser;
+  if(!u) return;
+  try{
+    const [all, rev] = await Promise.all([getCountFromServer(RUNS), getCountFromServer(query(RUNS, where("reviewed","==",true)))]);
+    st.textContent = `Signed in as ${u.email} · every run is saved · ${all.data().count} runs so far, ${rev.data().count} reviewed (all testers)`;
+  }catch(e){ st.textContent = `Signed in as ${u.email} · ⚠ can't reach the database: ${e.message}`; }
+}
+
+window.kbStore = {
+  user: () => auth.currentUser,
+  async saveRun(payload, audio){
+    const u = auth.currentUser; if(!u) return null;
+    const d = await addDoc(RUNS, {mode: "admin", status: "graded", ...payload, uid: u.uid, email: u.email, name: u.displayName||"",
+      createdAt: serverTimestamp(), reviewed: false, audioPath: null});
+    if(audio){
+      try{
+        const type = audio.type || "audio/webm", ext = (type.split("/")[1]||"webm").split(";")[0];
+        const path = `kriah-bench/${u.uid}/${d.id}.${ext}`;
+        await uploadBytes(ref(storage, path), audio, {contentType: type});
+        await updateDoc(d, {audioPath: path});
+      }catch(e){ console.warn("audio upload failed (run saved without audio)", e); }
+    }
+    refreshStats();
+    return d.id;
+  },
+  async updateRun(runId, payload){
+    await updateDoc(doc(RUNS, runId), {status: "graded", ...payload, updatedAt: serverTimestamp()});
+    refreshStats();
+  },
+  async getRun(id){
+    const snap = await getDoc(doc(RUNS, id));
+    return snap.exists() ? {id: snap.id, ...snap.data()} : null;
+  },
+  async recentRuns(n){
+    const snap = await getDocs(query(RUNS, orderBy("createdAt","desc"), limit(n)));
+    return snap.docs.map(d => ({id: d.id, ...d.data()}));
+  },
+  audioUrl: path => getDownloadURL(ref(storage, path)),
+  signIn: () => signInWithPopup(auth, new GoogleAuthProvider()).catch(e => alertStatus("Sign-in failed: " + e.message)),
+  signOut: () => signOut(auth),
+  async saveReview(runId, result, rev, lessons, votes){
+    const u = auth.currentUser;
+    const b = writeBatch(db);
+    b.update(doc(RUNS, runId), {...result, review: {...rev, uid: u.uid, email: u.email}, reviewed: true, reviewedAt: serverTimestamp()});
+    lessons.forEach(l => b.set(doc(LESSONS), {...l, runId, uid: u.uid, createdAt: serverTimestamp()}));
+    votes.forEach(v => {
+      const inc = m => Object.fromEntries(Object.entries(m).map(([t,n]) => [t, increment(n)]));
+      b.set(doc(db, "kriahBenchAliases", v.id), {he: v.he, yes: inc(v.yes), no: inc(v.no)}, {merge: true});
+    });
+    await b.commit();
+    cache = null;
+    refreshStats();
+  },
+  // Learned data for the words in this key. excludeRunId keeps a run's own corrections out when re-grading it.
+  async learned(wk, excludeRunId){
+    if(!auth.currentUser) return null;
+    cache ||= {aliases: {}, lessons: null};
+    if(!cache.lessons) cache.lessons = (await getDocs(query(LESSONS, orderBy("createdAt","desc"), limit(25)))).docs.map(d => d.data());
+    const ids = [...new Set(wk.map(w => aliasId(w.he)).filter(Boolean))];
+    await Promise.all(ids.filter(id => !(id in cache.aliases)).map(async id => {
+      const snap = await getDoc(doc(db, "kriahBenchAliases", id));
+      cache.aliases[id] = snap.exists() ? digest(snap.data()) : null;
+    }));
+    const aliases = {};
+    ids.forEach(id => { if(cache.aliases[id]) aliases[id] = cache.aliases[id]; });
+    return {aliases, lessons: cache.lessons.filter(l => l.runId !== excludeRunId).slice(0, 12)};
+  },
+  async reviewedRuns(n){
+    const snap = await getDocs(query(RUNS, orderBy("reviewedAt","desc"), limit(n)));
+    return snap.docs.map(d => ({id: d.id, ...d.data()})).filter(r => r.review && r.transcript && r.wordKey && r.ip);
+  },
+};
+
+function alertStatus(msg){
+  document.getElementById("cloudStatus").textContent = msg;
+  document.getElementById("cStatus").textContent = msg;
+}
+const btn = document.getElementById("btnSignIn");
+btn.disabled = false;
+btn.onclick = () => auth.currentUser ? signOut(auth) : window.kbStore.signIn();
+onAuthStateChanged(auth, u => {
+  cache = null;
+  const admin = !!u && ADMIN_EMAILS.includes((u.email||"").toLowerCase());
+  document.body.dataset.mode = !u ? "signedout" : admin ? "admin" : "contributor";
+  btn.textContent = u ? "Sign out" : "Sign in with Google";
+  window.onKbAuth?.(u);
+  if(admin){
+    refreshStats(); loadQueue();
+    // opened from the data page: kriah-test-bench.html?run=<id>
+    const runId = new URLSearchParams(location.search).get("run");
+    if(runId) window.kbStore.getRun(runId).then(r => r && loadRunForReview(r)).catch(e => console.error(e));
+  }
+});
+}catch(e){
+  // Firebase unreachable: the bench still works locally, just without saving.
+  console.error("cloud unavailable", e);
+  document.body.dataset.mode = "offline";
+  document.getElementById("cloudStatus").textContent = "⚠ Cloud unavailable (" + e.message + "): runs are not being saved.";
+}
 </script>
 </body>
 </html>

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kriah Data</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --label:#1d1d1f; --muted:#6e6e73;
+    --blue:#007aff; --green:#34c759; --red:#ff3b30; --amber:#ff9f0a;
+    --line:rgba(0,0,0,.08);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--label);padding:24px 16px 80px;font-size:14px;line-height:1.5}
+  .wrap{max-width:1200px;margin:0 auto}
+  h1{font-size:22px;font-weight:700}
+  h2{font-size:15px;font-weight:600;margin-bottom:10px}
+  a{color:var(--blue);text-decoration:none}
+  .top{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border-radius:14px;padding:16px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+  .tile{background:var(--card);border-radius:14px;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  .tile .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+  .tile .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .tile .s{font-size:12px;color:var(--muted)}
+  .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input[type=search],select{border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:13px;font-family:inherit;background:#fafafa}
+  input[type=search]{flex:1;min-width:200px}
+  label.chk{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted)}
+  button{border-radius:980px;padding:8px 16px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;background:#fff;border:1px solid var(--line);color:var(--label)}
+  button.primary{background:var(--blue);color:#fff;border-color:transparent}
+  button.sm{padding:4px 10px;font-size:12px}
+  .tablewrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);padding:8px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;user-select:none}
+  th.sorted{color:var(--label)}
+  td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr.row{cursor:pointer}
+  tr.row:hover td{background:rgba(0,122,255,.03)}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .pill{display:inline-block;border-radius:20px;padding:1px 9px;font-size:11px;font-weight:600;white-space:nowrap}
+  .ok{background:rgba(52,199,89,.12);color:#1d7a35}
+  .warn{background:rgba(255,159,10,.16);color:#9a6200}
+  .bad{background:rgba(255,59,48,.1);color:#b3261e}
+  .gray{background:rgba(0,0,0,.06);color:var(--muted)}
+  .he{font-family:'Heebo',sans-serif;direction:rtl;text-align:right;font-size:16px;line-height:1.9}
+  .detail td{background:#fafafa;padding:14px}
+  .dgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .dlabel{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin:8px 0 2px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word}
+  .chips{display:flex;flex-wrap:wrap;gap:4px;direction:rtl}
+  .chip{font-family:'Heebo',sans-serif;font-size:15px;padding:1px 8px;border-radius:6px}
+  .chip.disagree{outline:2px solid var(--amber)}
+  .status{font-size:13px;color:var(--muted)}
+  .status.err{color:var(--red)}
+  .gate{text-align:center;padding:60px 16px}
+  body:not([data-mode=admin]) #app{display:none}
+  body[data-mode=admin] #gate{display:none}
+  @media (max-width:700px){ .dgrid{grid-template-columns:1fr} .hide-sm{display:none} }
+</style>
+</head>
+<body data-mode="loading">
+<div class="wrap">
+  <div class="top">
+    <h1>Kriah Data</h1>
+    <a href="kriah-test-bench.html">← Test bench</a>
+    <span class="status" id="who" style="margin-left:auto"></span>
+  </div>
+  <div class="sub">Every recording from you and from contributors. Click a row for details; filter, sort, and export what you see.</div>
+
+  <div class="card gate" id="gate">
+    <div class="status" id="gateMsg">Loading…</div>
+    <div style="margin-top:14px"><button class="primary" id="btnSignIn" style="display:none">Sign in with Google</button></div>
+  </div>
+
+  <div id="app">
+    <div class="tiles" id="tiles"></div>
+
+    <div class="card">
+      <div class="filters">
+        <input type="search" id="q" placeholder="Search passage, person, transcript, notes…">
+        <select id="fWho"><option value="">Everyone</option></select>
+        <select id="fTask">
+          <option value="">All tasks</option>
+          <option value="admin">Your own runs</option>
+          <option value="correct">Contributor: correct read</option>
+          <option value="mistake">Contributor: any deliberate mistake</option>
+          <option value="skipPhrase">Contributor: skip a phrase</option>
+          <option value="wrongTranslation">Contributor: wrong translation</option>
+        </select>
+        <select id="fStatus">
+          <option value="">Any status</option>
+          <option value="todo">Needs review</option>
+          <option value="reviewed">Reviewed</option>
+          <option value="failed">Grading failed</option>
+          <option value="processing">Still processing</option>
+        </select>
+        <select id="fSource">
+          <option value="">All sources</option>
+          <option>Chumash</option><option>Kitzur</option><option>Talmud</option><option>Custom</option>
+        </select>
+        <label class="chk"><input type="checkbox" id="fDisagree"> grader was wrong</label>
+      </div>
+      <div class="filters" style="margin-top:10px">
+        <span class="status" id="count"></span>
+        <span style="flex:1"></span>
+        <button id="btnCsv">⬇ CSV (spreadsheet)</button>
+        <button id="btnJson">⬇ JSON (full data)</button>
+        <button id="btnReload">↻ Reload</button>
+      </div>
+    </div>
+
+    <div class="card tablewrap">
+      <table>
+        <thead><tr id="thead"></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div style="text-align:center;margin-top:12px"><button id="btnMore" style="display:none">Load older runs</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Contributors</h2>
+      <div class="tablewrap"><table><thead><tr><th>Who</th><th>Runs</th><th>Correct reads</th><th>Deliberate mistakes</th><th>Reviewed</th><th>Last active</th></tr></thead><tbody id="people"></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+const ADMIN_EMAILS = ["jhein1@mail.yu.edu"];   // keep in sync with kriah-test-bench.html and storage.rules
+const PAGE = 500;
+const G = "https://www.gstatic.com/firebasejs/12.10.0";
+const { initializeApp } = await import(`${G}/firebase-app.js`);
+const { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } = await import(`${G}/firebase-auth.js`);
+const { getFirestore, collection, getDocs, query, orderBy, limit, startAfter } = await import(`${G}/firebase-firestore.js`);
+const { getStorage, ref, getDownloadURL } = await import(`${G}/firebase-storage.js`);
+const app = initializeApp({
+  apiKey: "AIzaSyAJ4PiCzf5cMhp1FCEv1EA478rlC1H9FOU",
+  authDomain: "kitzur-app1.firebaseapp.com",
+  projectId: "kitzur-app1",
+  storageBucket: "kitzur-app1.firebasestorage.app",
+  messagingSenderId: "603995451341",
+  appId: "1:603995451341:web:61f543cfdb200891381e84",
+});
+const auth = getAuth(app), db = getFirestore(app), storage = getStorage(app);
+const RUNS = collection(db, "kriahBenchRuns");
+
+const $ = id => document.getElementById(id);
+const esc = t => String(t ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const pct = (a,n) => n ? Math.round(a/n*100) : null;
+const BOOKS = /^(Genesis|Exodus|Leviticus|Numbers|Deuteronomy)\b/;
+const TASK_LABEL = {admin:"Your run", correct:"Correct read", skipPhrase:"⚠ Skip a phrase", wrongTranslation:"⚠ Wrong translation"};
+const W = {matched:1, partial:.5, missing:0};
+
+// ── flatten one Firestore run into the fields the table, filters and CSV use ──
+function flatten(id, d){
+  const date = d.createdAt?.toDate ? d.createdAt.toDate() : null;
+  const task = d.mode === "contributor" ? (d.expected?.scenario || "correct") : "admin";
+  const ref = d.refLabel || "";
+  const source = !ref ? "Custom" : BOOKS.test(ref) ? "Chumash" : /^Kitzur/.test(ref) ? "Kitzur" : "Talmud";
+  const status = d.reviewed ? "reviewed" : d.status === "failed" ? "failed" : d.status === "processing" ? "processing" : "todo";
+  const pairs = d.judged?.pairs || [];
+  let wordAgree = null, transAgree = null, reviewerHe = null, reviewerEn = null, wrongWords = 0, wrongTrans = 0;
+  if(d.review){
+    const truth = d.review.read || [];
+    const same = truth.filter((t,k) => (d.perWord?.[k]?.read ?? false) === t).length;
+    wrongWords = truth.length - same;
+    wordAgree = pct(same, truth.length);
+    reviewerHe = pct(truth.filter(Boolean).length, truth.length);
+    const tr = d.review.trans || {}, keys = Object.keys(tr);
+    const tSame = keys.filter(i => pairs.find(p => String(p.idx) === i)?.translation === tr[i]).length;
+    wrongTrans = keys.length - tSame;
+    transAgree = pct(tSame, keys.length);
+    reviewerEn = keys.length ? Math.round(keys.reduce((s,i) => s + (W[tr[i]] ?? 0), 0) / keys.length * 100) : null;
+  }
+  return { id, raw: d, date, who: d.mode === "contributor" ? (d.name || d.email || "?") : "You", email: d.email || "",
+    task, source, ref, heText: d.heText || "", enText: d.enText || "", transcript: d.transcript || "",
+    status, graderHe: d.heScore ?? null, graderEn: d.enScore ?? null, reviewerHe, reviewerEn,
+    wordAgree, transAgree, wrongWords, wrongTrans, disagree: !!d.review && (wrongWords + wrongTrans) > 0,
+    notes: d.review?.notes || "", audioPath: d.audioPath || "", words: (d.heText || "").split(/\s+/).filter(Boolean).length };
+}
+
+let rows = [], lastDoc = null, sortKey = "date", sortDir = -1, openId = null;
+async function load(more){
+  $("count").textContent = "Loading…";
+  const q = more && lastDoc ? query(RUNS, orderBy("createdAt","desc"), startAfter(lastDoc), limit(PAGE)) : query(RUNS, orderBy("createdAt","desc"), limit(PAGE));
+  const snap = await getDocs(q);
+  if(!more) rows = [];
+  rows.push(...snap.docs.map(s => flatten(s.id, s.data())));
+  lastDoc = snap.docs[snap.docs.length - 1] || lastDoc;
+  $("btnMore").style.display = snap.docs.length === PAGE ? "" : "none";
+  const people = [...new Set(rows.filter(r => r.who !== "You").map(r => r.who))].sort();
+  const cur = $("fWho").value;
+  $("fWho").innerHTML = `<option value="">Everyone</option><option>You</option>` + people.map(p => `<option>${esc(p)}</option>`).join("");
+  $("fWho").value = cur;
+  render();
+}
+
+function filtered(){
+  const q = $("q").value.trim().toLowerCase(), who = $("fWho").value, task = $("fTask").value,
+        st = $("fStatus").value, src = $("fSource").value, dis = $("fDisagree").checked;
+  return rows.filter(r =>
+    (!who || r.who === who) &&
+    (!task || (task === "mistake" ? (r.task === "skipPhrase" || r.task === "wrongTranslation") : r.task === task)) &&
+    (!st || r.status === st) && (!src || r.source === src) && (!dis || r.disagree) &&
+    (!q || [r.ref, r.who, r.email, r.heText, r.enText, r.transcript, r.notes].some(x => x.toLowerCase().includes(q))));
+}
+
+const COLS = [
+  {k:"date", t:"Date"}, {k:"who", t:"Who"}, {k:"ref", t:"Passage"}, {k:"task", t:"Task"}, {k:"status", t:"Status"},
+  {k:"graderHe", t:"Grader He / En"}, {k:"reviewerHe", t:"Reviewer He / En"}, {k:"wordAgree", t:"Grader right?"}, {k:"audioPath", t:"", nosort:true},
+];
+function render(){
+  $("thead").innerHTML = COLS.map(c => `<th data-k="${c.k}" class="${c.k === sortKey ? "sorted" : ""}">${c.t}${c.k === sortKey ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>`).join("");
+  document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
+    const k = th.dataset.k; if(COLS.find(c => c.k === k)?.nosort) return;
+    sortDir = k === sortKey ? -sortDir : (k === "date" ? -1 : 1); sortKey = k; render();
+  });
+  const list = filtered().sort((a,b) => {
+    const x = a[sortKey], y = b[sortKey];
+    if(x == null && y == null) return 0; if(x == null) return 1; if(y == null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * sortDir;
+  });
+  $("count").textContent = `${list.length} of ${rows.length} runs`;
+  const statusPill = r => ({reviewed:`<span class="pill ok">✓ reviewed</span>`, todo:`<span class="pill gray">needs review</span>`,
+    failed:`<span class="pill bad">grading failed</span>`, processing:`<span class="pill gray">processing</span>`})[r.status];
+  const taskPill = r => `<span class="pill ${r.task === "admin" ? "gray" : r.task === "correct" ? "ok" : "warn"}">${TASK_LABEL[r.task] || r.task}</span>`;
+  const agree = r => r.wordAgree == null ? "—" : r.disagree
+    ? `<span class="pill bad">${r.wrongWords ? `${r.wrongWords} word${r.wrongWords>1?"s":""}` : ""}${r.wrongWords && r.wrongTrans ? ", " : ""}${r.wrongTrans ? `${r.wrongTrans} transl.` : ""} wrong</span>`
+    : `<span class="pill ok">✓ all right</span>`;
+  const two = (a,b) => a == null ? "—" : `${a} / ${b ?? "—"}`;
+  $("tbody").innerHTML = list.map(r => `
+    <tr class="row" data-id="${r.id}">
+      <td class="num">${r.date ? r.date.toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) : "—"}</td>
+      <td>${esc(r.who)}</td>
+      <td>${esc(r.ref || "custom text")} <span class="status hide-sm">· ${r.words}w</span></td>
+      <td>${taskPill(r)}</td>
+      <td>${statusPill(r)}</td>
+      <td class="num">${two(r.graderHe, r.graderEn)}</td>
+      <td class="num">${two(r.reviewerHe, r.reviewerEn)}</td>
+      <td>${agree(r)}</td>
+      <td>${r.audioPath ? `<button class="sm play" data-id="${r.id}">▶</button>` : ""}</td>
+    </tr>${openId === r.id ? detailRow(r) : ""}`).join("") || `<tr><td colspan="9" class="status" style="text-align:center;padding:30px">No runs match these filters.</td></tr>`;
+  document.querySelectorAll("tr.row").forEach(tr => tr.onclick = e => {
+    if(e.target.closest("button,audio,a")) return;
+    openId = openId === tr.dataset.id ? null : tr.dataset.id; render();
+  });
+  document.querySelectorAll("button.play").forEach(b => b.onclick = () => play(b));
+  renderTiles(); renderPeople();
+}
+
+function detailRow(r){
+  const d = r.raw, ip = d.ip || [], x = d.expected;
+  const told = !x ? "" : x.scenario === "skipPhrase" ? `Told to skip: <span class="he">${esc(x.skipPairs.map(i => ip[i]?.he).join(" / "))}</span>`
+    : x.scenario === "wrongTranslation" ? `Told to say: ${x.wrongPairs.map(i => `"${esc(x.shownEn[i])}" (real: "${esc(ip[i]?.en)}")`).join("; ")}`
+    : "Told to read normally.";
+  const truth = d.review?.read;
+  const chips = (d.perWord || []).map((w,k) => {
+    const g = w.read, h = truth ? truth[k] : g;
+    return `<span class="chip ${h ? "ok" : "bad"} ${truth && g !== h ? "disagree" : ""}" title="grader: ${g ? "read" : "not read"}${truth ? ` · reviewer: ${h ? "read" : "not read"}` : ""}">${esc(w.he)}</span>`;
+  }).join("");
+  const pairs = (d.judged?.pairs || []).map(p => {
+    const h = d.review?.trans?.[p.idx];
+    return `<div style="margin-bottom:4px">${esc(ip[p.idx]?.en)}: <span class="pill ${p.translation === "matched" ? "ok" : p.translation === "partial" ? "warn" : "bad"}">grader: ${p.translation}</span>${h && h !== p.translation ? ` <span class="pill warn">reviewer: ${h}</span>` : ""} <span class="status">heard "${esc(p.transHeard)}"</span></div>`;
+  }).join("");
+  return `<tr class="detail"><td colspan="9"><div class="dgrid">
+    <div>
+      <div class="dlabel">Hebrew</div><div class="he">${esc(r.heText)}</div>
+      <div class="dlabel">English (answer key)</div><div>${esc(r.enText)}</div>
+      ${told ? `<div class="dlabel">Instructions given</div><div>${told}</div>` : ""}
+      <div class="dlabel">Words: green = read${truth ? "; orange ring = grader was wrong" : ""}</div><div class="chips">${chips || "—"}</div>
+    </div>
+    <div>
+      <div class="dlabel">Transcript</div><div class="mono">${esc(r.transcript) || "—"}</div>
+      <div class="dlabel">Translation verdicts</div>${pairs || "—"}
+      ${r.notes ? `<div class="dlabel">Review notes</div><div>${esc(r.notes)}</div>` : ""}
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <a href="kriah-test-bench.html?run=${r.id}" target="_blank"><button class="primary sm">${d.reviewed ? "Open in bench" : "Review in bench"} →</button></a>
+        <span class="status">${esc(r.email)} · id ${r.id}</span>
+      </div>
+    </div></div></td></tr>`;
+}
+
+async function play(b){
+  const r = rows.find(x => x.id === b.dataset.id);
+  try{
+    const a = document.createElement("audio");
+    a.controls = true; a.autoplay = true; a.style.width = "220px";
+    a.src = await getDownloadURL(ref(storage, r.audioPath));
+    b.replaceWith(a);
+  }catch(e){ b.textContent = "⚠"; b.title = e.message; }
+}
+
+function renderTiles(){
+  const rev = rows.filter(r => r.status === "reviewed");
+  const mist = rows.filter(r => r.task === "skipPhrase" || r.task === "wrongTranslation");
+  const avg = (list, k) => { const v = list.map(r => r[k]).filter(x => x != null); return v.length ? Math.round(v.reduce((a,b) => a+b, 0) / v.length) + "%" : "—"; };
+  const revMist = rev.filter(r => mist.includes(r)), revOk = rev.filter(r => !mist.includes(r));
+  const tiles = [
+    ["Total runs", rows.length, `${rows.filter(r => r.task !== "admin").length} from contributors`],
+    ["Needs review", rows.filter(r => r.status === "todo").length, `${rows.filter(r => r.status === "failed").length} failed grading`],
+    ["Reviewed", rev.length, `${rev.filter(r => r.disagree).length} where the grader was wrong`],
+    ["Contributors", new Set(rows.filter(r => r.task !== "admin").map(r => r.email)).size, ""],
+    ["Deliberate mistakes", mist.length, `${revMist.length} reviewed`],
+    ["Grader right: correct reads", avg(revOk, "wordAgree"), `words · translation ${avg(revOk, "transAgree")}`],
+    ["Grader right: mistakes", avg(revMist, "wordAgree"), `words · translation ${avg(revMist, "transAgree")}`],
+  ];
+  $("tiles").innerHTML = tiles.map(([l,n,s]) => `<div class="tile"><div class="l">${l}</div><div class="n">${n}</div><div class="s">${s}</div></div>`).join("");
+}
+
+function renderPeople(){
+  const by = {};
+  rows.forEach(r => {
+    const p = by[r.who] ||= {who: r.who, n:0, ok:0, mist:0, rev:0, last:null};
+    p.n++; if(r.task === "correct" || r.task === "admin") p.ok++; else p.mist++;
+    if(r.status === "reviewed") p.rev++;
+    if(r.date && (!p.last || r.date > p.last)) p.last = r.date;
+  });
+  $("people").innerHTML = Object.values(by).sort((a,b) => b.n - a.n).map(p =>
+    `<tr><td><a href="#" data-who="${esc(p.who)}" class="pwho">${esc(p.who)}</a></td><td class="num">${p.n}</td><td class="num">${p.ok}</td><td class="num">${p.mist}</td><td class="num">${p.rev}</td><td class="num">${p.last ? p.last.toLocaleDateString() : "—"}</td></tr>`).join("");
+  document.querySelectorAll(".pwho").forEach(a => a.onclick = e => { e.preventDefault(); $("fWho").value = a.dataset.who; render(); window.scrollTo({top:0, behavior:"smooth"}); });
+}
+
+// ── exports ──
+function download(name, text, type){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type}));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const stamp = () => new Date().toISOString().slice(0,10);
+$("btnCsv").onclick = () => {
+  const cols = ["id","date","who","email","task","source","ref","words","status","graderHe","graderEn","reviewerHe","reviewerEn","wordAgree","transAgree","wrongWords","wrongTrans","heText","enText","transcript","notes","audioPath"];
+  const cell = v => { const s = v instanceof Date ? v.toISOString() : String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s; };
+  download(`kriah-runs-${stamp()}.csv`, "﻿" + [cols.join(","), ...filtered().map(r => cols.map(c => cell(r[c])).join(","))].join("\n"), "text/csv;charset=utf-8");
+};
+$("btnJson").onclick = () => {
+  const out = filtered().map(r => ({id: r.id, ...r.raw, createdAt: r.date?.toISOString() ?? null,
+    reviewedAt: r.raw.reviewedAt?.toDate?.().toISOString() ?? null, updatedAt: r.raw.updatedAt?.toDate?.().toISOString() ?? null}));
+  download(`kriah-runs-${stamp()}.json`, JSON.stringify(out, null, 2), "application/json");
+};
+
+["q","fWho","fTask","fStatus","fSource","fDisagree"].forEach(id => $(id).addEventListener("input", render));
+$("btnReload").onclick = () => load(false);
+$("btnMore").onclick = () => load(true);
+$("btnSignIn").onclick = () => signInWithPopup(auth, new GoogleAuthProvider()).catch(e => { $("gateMsg").textContent = "Sign-in failed: " + e.message; });
+
+onAuthStateChanged(auth, u => {
+  const admin = !!u && ADMIN_EMAILS.includes((u.email || "").toLowerCase());
+  document.body.dataset.mode = admin ? "admin" : "gate";
+  $("who").textContent = u ? u.email : "";
+  $("btnSignIn").style.display = u ? "none" : "";
+  $("gateMsg").textContent = !u ? "Sign in to see the data." : admin ? "" : "This page is only for the project owner.";
+  if(admin) load(false).catch(e => { $("count").textContent = "⚠ " + e.message; });
+});
+</script>
+</body>
+</html>
