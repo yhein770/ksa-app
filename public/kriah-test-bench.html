@@ -59,7 +59,9 @@
   .wchip.missing{background:rgba(255,59,48,.08);color:#b3261e;border-color:rgba(255,59,48,.25)}
   .wchip.changed,.pill.changed{outline:2px solid var(--amber);outline-offset:1px}
   button.pill{border:none;box-shadow:none;cursor:pointer;font-size:11px;padding:2px 10px}
-  .review{border-top:1px solid var(--line);margin-top:14px;padding-top:6px}
+  .review{background:rgba(0,122,255,.05);border:2px solid rgba(0,122,255,.35);border-radius:12px;padding:12px 14px;margin:4px 0 16px}
+  .review .rtitle{font-size:16px;font-weight:700;margin-bottom:2px}
+  .rpair{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0;font-size:13px}
   /* modes: admin sees the bench; everyone else sees the contributor screen */
   body[data-mode=loading] #bench, body[data-mode=loading] #contrib,
   body[data-mode=contributor] #bench, body[data-mode=signedout] #bench,
@@ -591,8 +593,14 @@ async function transcribe(blob){
   const fmt = v => v.scored==="ok" ? `He ${v.he}/En ${v.en}` : (v.ok ? "score failed" : "failed");
   $("recStatus").className="status";
   $("recStatus").textContent = winner
-    ? `🏆 ${winner.name} wins (score ${winner.score}) — OpenAI ${fmt(vendors[0])}, Gemini ${fmt(vendors[1])}.`
+    ? `🏆 ${winner.name} wins (score ${winner.score}) — OpenAI ${fmt(vendors[0])}, Gemini ${fmt(vendors[1])}. `
     : "Both transcripts failed to score.";
+  if(winner){
+    const go = document.createElement("a");
+    go.href = "#"; go.textContent = "✎ Check & correct the grading ↓"; go.style.fontWeight = "600";
+    go.onclick = e => { e.preventDefault(); $("reviewBox")?.scrollIntoView({behavior:"smooth", block:"start"}); };
+    $("recStatus").appendChild(go);
+  }
 }
 
 function vendorSummary(vendors){
@@ -819,17 +827,22 @@ function renderResults(res){
     <div class="scores">
       <div class="scorebox"><div class="n">${heScore}${nW?` → ${youHe}`:""}</div><div class="l">Hebrew read${nW?" (grader → you)":""}</div></div>
       <div class="scorebox"><div class="n">${enScore}${nT?` → ${youEn}`:""}</div><div class="l">Translation${nT?" (grader → you)":""}</div></div>
-    </div>${pairHtml}
-    <div class="review">
-      <label>Review: tap anything the grader got wrong</label>
-      <div class="hint">Green = counted as read. Tap a word to flip it. Translation pills cycle matched → partial → missing. Corrected items get an orange ring. Saving teaches the grader: corrected words become learned pronunciations, and corrected translations become examples for the judge.</div>
+    </div>
+    <div class="review" id="reviewBox">
+      <div class="rtitle">✎ Was this graded right? Fix anything it got wrong</div>
+      <div class="hint" style="margin-top:2px">Tap a word to flip it between read (green) and not read (red). Tap a translation verdict to change it. What you change gets an orange ring. Saving teaches the grader.</div>
+      <label>Hebrew words</label>
       <div class="wchips">${chips}</div>
+      <label>Translation</label>
+      ${judged.pairs.map(p => { const t = review.trans[p.idx], ch = t !== p.translation;
+        return `<div class="rpair"><button class="pill ${t}${ch?" changed":""} tpill" data-p="${p.idx}" title="Tap to change — grader said ${p.translation}">${t}${ch?" ✎":""}</button><span>${(ip[p.idx]||{}).en||""}</span></div>`; }).join("")}
       <textarea id="reviewNotes" rows="2" placeholder="Notes (optional): what you actually did, anything else it missed"></textarea>
       <div class="row">
         <button class="primary" id="btnReview"${review.saved?" disabled":""}>${review.saved?"Review saved ✓":corrected?`Save review (${nW+nT} correction${nW+nT===1?"":"s"})`:"Looks right ✓ save review"}</button>
         <span class="status" id="reviewStatus"></span>
       </div>
     </div>
+    <label>Phrase-by-phrase details</label>${pairHtml}
     <details><summary>Raw JSON</summary><div class="mono">${JSON.stringify(judged,null,2).replace(/</g,"&lt;")}</div></details>`;
   $("reviewNotes").value = review.notes;
   $("reviewNotes").addEventListener("input", e => { review.notes = e.target.value; });
