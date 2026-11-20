@@ -68,6 +68,14 @@
   .pword input{width:90px;font-size:11px;padding:2px 4px;border-radius:6px;direction:ltr;text-align:center}
   .enedit{cursor:pointer;border-bottom:1px dashed rgba(0,0,0,.2)}
   .enedit.fixed{color:#9a6200;font-weight:600;border-bottom-color:var(--amber)}
+  .said{background:rgba(255,159,10,.07);border:1px solid rgba(255,159,10,.35);border-radius:10px;padding:8px 10px;margin:8px 0 4px}
+  .said .slabel{font-size:11px;font-weight:700;color:#9a6200;text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px}
+  .said .sline{display:flex;gap:8px;align-items:baseline;font-size:13.5px;margin:3px 0}
+  .said .sk{color:var(--muted);min-width:96px;font-size:12px}
+  .said .sv{cursor:pointer;border-bottom:1px dashed rgba(0,0,0,.25);font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+  .said .sv.fixed{color:#9a6200;font-weight:600;border-bottom-color:var(--amber)}
+  .said .was{color:var(--muted);font-size:11.5px;text-decoration:line-through}
+  .keyfix{font-size:11.5px;color:var(--muted)}
   .pnote{width:100%;margin-top:6px;font-size:13px;padding:6px 10px}
   .rpair{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0;font-size:13px}
   /* modes: admin sees the bench; everyone else sees the contributor screen */
@@ -805,7 +813,8 @@ $("btnCopy").onclick = async () => {
 const TRANS_CYCLE = {matched:"partial", partial:"missing", missing:"matched"};
 function initReview(res){
   // trFix: word index → corrected transliteration · enFix: pair idx → corrected English answer key · pairNotes: pair idx → note
-  review = { read: res.align.perWord.map(w=>w.read), trans: {}, trFix: {}, enFix: {}, pairNotes: {}, notes: "", saved: false };
+  // heardFix / transHeardFix: pair idx → what the student ACTUALLY said (the transcription misheard them)
+  review = { read: res.align.perWord.map(w=>w.read), trans: {}, trFix: {}, enFix: {}, heardFix: {}, transHeardFix: {}, pairNotes: {}, notes: "", saved: false, regrade: null };
   res.judged.pairs.forEach(p => { review.trans[p.idx] = p.translation; });
 }
 function pairKriah(read, wordIdxs){
@@ -822,8 +831,9 @@ function renderResults(res){
   const nW = align.perWord.filter((x,k)=>review.read[k]!==x.read).length;
   const nT = judged.pairs.filter(p=>review.trans[p.idx]!==p.translation).length;
   const nTr = Object.keys(review.trFix).length, nEn = Object.keys(review.enFix).length;
+  const nH = Object.keys(review.heardFix).length + Object.keys(review.transHeardFix).length;
   const nNotes = Object.values(review.pairNotes).filter(x => x.trim()).length;
-  const total = nW + nT + nTr + nEn;
+  const total = nW + nT + nTr + nEn + nH;
   const keyOf = k => (res.wk || [])[k] || align.perWord[k] || {};
   const pairHtml = judged.pairs.map(p=>{
     const ref = ip[p.idx]||{};
@@ -837,17 +847,21 @@ function renderResults(res){
         <span class="tr${fixed?" fixed":""}" data-tr="${k}" title="Tap to fix the transliteration">${esc(fixed || primTr(keyOf(k).tr))}${fixed?" ✎":""}</span>
       </div>`;
     }).join("");
-    const enFixed = review.enFix[p.idx];
+    const enFixed = review.enFix[p.idx], hf = review.heardFix[p.idx], tf = review.transHeardFix[p.idx];
     return `<div class="pairrow">
       <div class="pwords">${words}</div>
-      <div class="enline"><span class="enedit${enFixed!=null?" fixed":""}" data-en="${p.idx}" title="Tap if this English answer key is wrong">${esc(enFixed ?? ref.en ?? "")}${enFixed!=null?" ✎":""}</span></div>
+      <div class="enline">Answer key: <span class="enedit${enFixed!=null?" fixed":""}" data-en="${p.idx}" title="Tap only if the reference translation itself is wrong">${esc(enFixed ?? ref.en ?? "")}${enFixed!=null?" ✎":""}</span></div>
+      <div class="said">
+        <div class="slabel">What the student said: tap to correct if it misheard them</div>
+        <div class="sline"><span class="sk">Read as</span><span class="sv${hf!=null?" fixed":""}" data-heard="${p.idx}">${esc(hf ?? p.heard) || "(nothing picked up)"}${hf!=null?" ✎":""}</span>${hf!=null?`<span class="was">${esc(p.heard)}</span>`:""}</div>
+        <div class="sline"><span class="sk">Translated as</span><span class="sv${tf!=null?" fixed":""}" data-theard="${p.idx}">${esc(tf ?? p.transHeard) || "(nothing picked up)"}${tf!=null?" ✎":""}</span>${tf!=null?`<span class="was">${esc(p.transHeard)}</span>`:""}</div>
+      </div>
       <span class="pill ${kr}">kriah: ${kr}</span>
       <button class="pill ${t}${tChanged?" changed":""} tpill" data-p="${p.idx}" title="Tap to correct — grader said ${p.translation}">translation: ${t}${tChanged?" ✎":""}</button>
-      <div class="heard">heard: "${esc(p.heard)}" → "${esc(p.transHeard)}"</div>
       <input type="text" class="pnote" data-note="${p.idx}" placeholder="What's wrong in this phrase? (optional)">
     </div>`;
   }).join("");
-  const summary = [nW && `${nW} word${nW>1?"s":""} flipped`, nT && `${nT} verdict${nT>1?"s":""}`, nTr && `${nTr} transliteration${nTr>1?"s":""}`, nEn && `${nEn} answer key${nEn>1?"s":""}`, nNotes && `${nNotes} note${nNotes>1?"s":""}`].filter(Boolean).join(" · ");
+  const summary = [nH && `${nH} mishearing${nH>1?"s":""}`, nW && `${nW} word${nW>1?"s":""} flipped`, nT && `${nT} verdict${nT>1?"s":""}`, nTr && `${nTr} transliteration${nTr>1?"s":""}`, nEn && `${nEn} answer key${nEn>1?"s":""}`, nNotes && `${nNotes} note${nNotes>1?"s":""}`].filter(Boolean).join(" · ");
   $("results").innerHTML = `
     <div class="scores">
       <div class="scorebox"><div class="n">${heScore}${nW?` → ${youHe}`:""}</div><div class="l">Hebrew read${nW?" (grader → you)":""}</div></div>
@@ -855,9 +869,11 @@ function renderResults(res){
     </div>
     <div class="review" id="reviewBox">
       <div class="rtitle">✎ Was this graded right? Fix it in the phrases below</div>
-      <div class="hint" style="margin-top:2px">In each phrase: tap a <b>Hebrew word</b> to flip read / not read · tap the <b>transliteration</b> under a word to fix how it should sound · tap the <b>English</b> if the answer key itself is wrong · tap the <b>translation</b> verdict to change it · type in the box to say what's wrong. Changes get an orange ring.</div>
+      <div class="hint" style="margin-top:2px">In each phrase, the orange box shows <b>what it heard the student say</b>. If it misheard them, tap <b>Read as</b> or <b>Translated as</b> and type what they actually said; the words re-mark themselves from your text. You can also tap a <b>Hebrew word</b> to flip read / not read, tap the <b>translation</b> verdict to change it, and type what's wrong in the box. (Rarely needed: tap the small transliteration under a word or the answer key if the <i>reference</i> itself is wrong.)</div>
+      ${review.regrade ? `<div class="hint" style="color:var(--label);font-weight:600;margin-top:8px">With what they actually said, it grades: Hebrew ${review.regrade.he} · Translation ${review.regrade.en}${review.regrade.err?` (⚠ ${esc(review.regrade.err)})`:""}. ${review.regrade.he === youHe && review.regrade.en === youEn ? "That matches your grade, so the problem was the transcription, not the grading." : "That still differs from your grade, so the grading itself needs work too."}</div>` : ""}
       <textarea id="reviewNotes" rows="2" placeholder="Overall notes (optional)"></textarea>
       <div class="row">
+        ${nH && !review.saved ? `<button id="btnRegrade">↻ Re-grade with what they actually said</button>` : ""}
         <button class="primary" id="btnReview"${review.saved?" disabled":""}>${review.saved?"Review saved ✓":(total||nNotes)?`Save review (${summary})`:"Looks right ✓ save review"}</button>
         <span class="status" id="reviewStatus"></span>
       </div>
@@ -893,6 +909,32 @@ function renderResults(res){
     const i = +el.dataset.en, orig = ip[i]?.en || "";
     inlineEdit(el, review.enFix[i] ?? orig, orig, v => { if(v) review.enFix[i] = v; else delete review.enFix[i]; }, true);
   });
+  document.querySelectorAll(".said .sv[data-heard]").forEach(el => el.onclick = () => {
+    const i = +el.dataset.heard, orig = judged.pairs.find(p => p.idx === i)?.heard || "";
+    inlineEdit(el, review.heardFix[i] ?? orig, orig, v => {
+      if(v == null){ delete review.heardFix[i]; return; }
+      review.heardFix[i] = v;
+      // re-mark this phrase's words from what the student actually read
+      const idxs = ip[i]?.wordIdxs || [];
+      const toks = v.split(/\s+/).map(alignNorm).filter(Boolean);
+      const {matched} = alignTokens(idxs.map(k => align.perWord[k]), toks, 0.45);
+      idxs.forEach((k, j) => { review.read[k] = matched.has(j); });
+    });
+  });
+  document.querySelectorAll(".said .sv[data-theard]").forEach(el => el.onclick = () => {
+    const i = +el.dataset.theard, orig = judged.pairs.find(p => p.idx === i)?.transHeard || "";
+    inlineEdit(el, review.transHeardFix[i] ?? orig, orig, v => { if(v == null) delete review.transHeardFix[i]; else review.transHeardFix[i] = v; });
+  });
+  const rg = $("btnRegrade");
+  if(rg) rg.onclick = async () => {
+    rg.disabled = true; rg.textContent = "Re-grading…";
+    // rebuild the transcript phrase by phrase from the corrected readings/translations
+    const fixed = judged.pairs.slice().sort((a,b) => a.idx - b.idx)
+      .map(p => [review.heardFix[p.idx] ?? p.heard, review.transHeardFix[p.idx] ?? p.transHeard].filter(Boolean).join(" ")).join(" ");
+    try{ const r2 = await judge(fixed, {wordKey: res.wk, ip}); review.regrade = {he: r2.heScore, en: r2.enScore, transcript: fixed}; }
+    catch(e){ review.regrade = {he:"?", en:"?", err: e.message}; }
+    renderResults(res);
+  };
   $("btnReview").onclick = () => saveReview(res);
 }
 
@@ -964,7 +1006,7 @@ async function saveReview(res){
     let runId = await (lastRunSave || Promise.resolve(null));
     if(!runId) runId = lastRunSave = await window.kbStore.saveRun({...runPayload(res), source:"manual"}, null);
     const lessons = res.judged.pairs.filter(p => review.trans[p.idx] !== p.translation).map(p => ({
-      pairHe: res.ip[p.idx]?.he||"", pairEn: res.ip[p.idx]?.en||"", transHeard: p.transHeard||"",
+      pairHe: res.ip[p.idx]?.he||"", pairEn: res.ip[p.idx]?.en||"", transHeard: review.transHeardFix[p.idx] ?? p.transHeard ?? "",
       modelVerdict: p.translation, correctVerdict: review.trans[p.idx] }));
     const votes = aliasVotes(res);
     const trFixes = Object.entries(review.trFix).map(([k,tr]) => ({id: aliasId(res.align.perWord[k]?.he), he: res.align.perWord[k]?.he, tr})).filter(f => f.id);
@@ -973,7 +1015,8 @@ async function saveReview(res){
       : null;
     const pairNotes = Object.fromEntries(Object.entries(review.pairNotes).filter(([,v]) => v.trim()));
     await window.kbStore.saveReview(runId, runPayload(res),
-      {read: review.read, trans: review.trans, trFix: review.trFix, enFix: review.enFix, pairNotes, notes: review.notes.trim()},
+      {read: review.read, trans: review.trans, trFix: review.trFix, enFix: review.enFix, heardFix: review.heardFix, transHeardFix: review.transHeardFix,
+       regrade: review.regrade, pairNotes, notes: review.notes.trim()},
       lessons, votes, trFixes, pairFix);
     applyFixesLocally(trFixes, pairFix);
     review.saved = true;
@@ -1302,6 +1345,7 @@ async function loadRunForReview(run){
     if(run.reviewed && run.review){
       review.read = run.review.read; review.trans = run.review.trans; review.notes = run.review.notes || ""; review.saved = true;
       review.trFix = run.review.trFix || {}; review.enFix = run.review.enFix || {}; review.pairNotes = run.review.pairNotes || {};
+      review.heardFix = run.review.heardFix || {}; review.transHeardFix = run.review.transHeardFix || {}; review.regrade = run.review.regrade || null;
       renderResults(res);
     }
   } else {

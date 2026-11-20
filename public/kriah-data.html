@@ -312,6 +312,10 @@ function fixesHtml(d){
   const rv = d.review || {}, ip = d.ip || [], items = [];
   Object.entries(rv.trFix || {}).forEach(([k,tr]) => items.push(`Transliteration of <span class="he">${esc(d.perWord?.[k]?.he)}</span>: "${esc([].concat(d.wordKey?.[k]?.tr ?? "")[0])}" → <b>"${esc(tr)}"</b>`));
   Object.entries(rv.enFix || {}).forEach(([i,en]) => items.push(`Answer key for phrase ${+i+1}: "${esc(ip[i]?.en)}" → <b>"${esc(en)}"</b>`));
+  const pr = i => (d.judged?.pairs || []).find(p => String(p.idx) === String(i)) || {};
+  Object.entries(rv.heardFix || {}).forEach(([i,t]) => items.push(`Phrase ${+i+1} misheard (reading): heard "${esc(pr(i).heard)}" → actually <b>"${esc(t)}"</b>`));
+  Object.entries(rv.transHeardFix || {}).forEach(([i,t]) => items.push(`Phrase ${+i+1} misheard (translation): heard "${esc(pr(i).transHeard)}" → actually <b>"${esc(t)}"</b>`));
+  if(rv.regrade) items.push(`Re-graded with corrected transcript: Hebrew ${esc(rv.regrade.he)} · Translation ${esc(rv.regrade.en)}`);
   Object.entries(rv.pairNotes || {}).forEach(([i,n]) => items.push(`Phrase ${+i+1} (<span class="he">${esc(ip[i]?.he)}</span>): ${esc(n)}`));
   return items.length ? `<div class="dlabel">Corrections</div>${items.map(x => `<div style="margin-bottom:3px">• ${x}</div>`).join("")}` : "";
 }
