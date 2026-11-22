@@ -214,6 +214,10 @@
     <details>
       <summary>Edit judging prompt template</summary>
       <div class="hint">Placeholders: {KEY} {PAIRS} {TRANSCRIPT} {LESSONS} (past human corrections — inserted before the JSON spec if the placeholder is missing). Tweak, then re-run the regression set below to see if the change helped or hurt.</div>
+      <div class="row" style="margin-top:0;margin-bottom:6px">
+        <button id="btnTplReset">Reset to latest default</button>
+        <span class="status" id="tplStatus"></span>
+      </div>
       <textarea id="promptTpl" rows="16" class="mono"></textarea>
     </details>
   </div>
@@ -362,7 +366,11 @@ Your task has two parts:
    - "translation" = the student speaking English to convey the meaning. A lone Hebrew/Aramaic loanword inside English syntax ("the Kohanim eat terumah") is TRANSLATION, not reading.
    Cover the WHOLE transcript in order; do not drop or reorder text. A student typically reads a Hebrew phrase, then translates it, then reads the next phrase, and so on.
 
-2. For each phrase pair, judge whether the student's spoken English conveyed the pair's meaning. Lenient: synonyms, paraphrase, gist, or the Hebrew/Aramaic term itself all count as "matched". "partial" if some of the pair's meaning came through. "missing" only if clearly absent. Do not penalize style, brevity, or word choice. Verdict boundaries: "matched" = all of the pair's substantive concepts conveyed. "partial" = at least one substantive concept conveyed AND at least one substantive concept absent (e.g. said "checked two times" but never the time period → partial, NOT missing). "missing" = none of the pair's meaning spoken in English anywhere. A "substantive concept" is a unit of meaning — who, what, when, how many, which object — NOT grammatical nuance, register, possessives, articles, or word choice ("one of the public" fully conveys "belonging to a group" → matched). If the only thing you can name as absent is a nuance rather than a concept, the verdict is "matched". Also give heRead ("read"/"partial"/"missing") as your impression of whether the pair's Hebrew words were sounded out.
+2. For each phrase pair, judge whether the student's spoken English correctly conveyed the meaning of the pair's HEBREW/ARAMAIC. The English given with each pair is ONE reference translation (usually Sefaria's, often idiomatic or interpretive). It is NOT the only right answer; it just helps you see the intended sense. Judge the student against the Hebrew/Aramaic itself:
+   - A literal, word-by-word translation is correct even when the reference is idiomatic. Example: שַׂר הַטַּבָּחִים, reference "the chief steward" / "captain of the guard"; the student says "chief of the cooks" or "chief of kitchens" → matched (טבחים literally means cooks/slaughterers).
+   - Any accepted meaning of a word counts, as does a traditional yeshiva or Rashi-based rendering, even if the reference chose a different one.
+   - Never mark "partial" or "missing" just because the student's wording or chosen sense differs from the reference. Only a concept the Hebrew actually contains that the student left out or got wrong (wrong subject, wrong number, wrong action, reversed meaning) counts against them.
+   Lenient: synonyms, paraphrase, gist, or the Hebrew/Aramaic term itself all count as "matched". "partial" if some of the pair's meaning came through. "missing" only if clearly absent. Do not penalize style, brevity, or word choice. Verdict boundaries: "matched" = all of the pair's substantive concepts conveyed. "partial" = at least one substantive concept conveyed AND at least one substantive concept absent (e.g. said "checked two times" but never the time period → partial, NOT missing). "missing" = none of the pair's meaning spoken in English anywhere. A "substantive concept" is a unit of meaning — who, what, when, how many, which object — NOT grammatical nuance, register, possessives, articles, or word choice ("one of the public" fully conveys "belonging to a group" → matched). If the only thing you can name as absent is a nuance rather than a concept, the verdict is "matched". Also give heRead ("read"/"partial"/"missing") as your impression of whether the pair's Hebrew words were sounded out.
 
 Do NOT try to match individual Hebrew words to indices yourself — a separate deterministic aligner scores the reading from the "reading" spans you label.
 
@@ -371,7 +379,14 @@ Return ONLY JSON, no markdown:
  "pairs":[{"idx":0,"heRead":"read","heard":"short quote of the reading span for this pair","translation":"matched","transHeard":"what they said for it"}]}`;
 
 $("promptTpl").value = localStorage.getItem("ktb_tpl") || DEFAULT_TPL;
-$("promptTpl").addEventListener("input", () => localStorage.setItem("ktb_tpl", $("promptTpl").value));
+function tplStatus(){
+  const custom = $("promptTpl").value !== DEFAULT_TPL;
+  $("tplStatus").className = "status" + (custom ? " err" : "");
+  $("tplStatus").textContent = custom ? "⚠ This browser is using an edited prompt, so improvements to the default don't reach it." : "Using the latest default.";
+}
+$("promptTpl").addEventListener("input", () => { localStorage.setItem("ktb_tpl", $("promptTpl").value); tplStatus(); });
+$("btnTplReset").onclick = () => { $("promptTpl").value = DEFAULT_TPL; try{ localStorage.removeItem("ktb_tpl"); }catch{} tplStatus(); };
+tplStatus();
 
 function stripNikud(s){return s.replace(/[\u0591-\u05C7]/g,"").replace(/[^\u05D0-\u05EA\s]/g,"").trim();}
 // Learned pronunciations are keyed by the bare consonants of a word, so they carry across passages.
@@ -735,7 +750,7 @@ function buildPrompt(transcript, wk, ip, lessons){
   } else tpl = tpl.replace("{LESSONS}", lb);
   return tpl
     .replace("{KEY}", wk.map(w=>`${w.i}. ${w.he} — "${w.tr}"`).join("\n"))
-    .replace("{PAIRS}", ip.map(p=>`${p.idx}. he: "${p.he}" (words ${p.wordIdxs.join(",")}) → en: "${p.en}"`).join("\n"))
+    .replace("{PAIRS}", ip.map(p=>`${p.idx}. he: "${p.he}" (words ${p.wordIdxs.join(",")}) → reference en (one possible rendering): "${p.en}"`).join("\n"))
     .replace("{TRANSCRIPT}", transcript);
 }
 const JUDGE_SYSTEM = "You are a precise kriah grading engine. Segment the transcript into reading vs translation spans and judge translation per phrase pair. Output ONLY valid JSON.";
