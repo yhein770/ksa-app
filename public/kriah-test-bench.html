@@ -88,8 +88,18 @@
   button.big{font-size:17px;padding:14px 28px;font-weight:600}
   .center{justify-content:center}
   .cinstr{font-size:14px;color:var(--muted);margin-bottom:14px}
-  .che{font-family:'Heebo',sans-serif;direction:rtl;text-align:right;font-size:24px;line-height:2.1;margin-bottom:14px}
-  .cen{font-size:17px;line-height:1.7;border-top:1px solid var(--line);padding-top:12px}
+  .chow{background:rgba(0,122,255,.06);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:15px;line-height:1.55}
+  .chow ol{margin:6px 0 0 20px}
+  .chow .ex{font-size:13px;color:var(--muted);margin-top:6px}
+  .cseg{display:flex;gap:12px;align-items:flex-start;border:2px solid var(--line);border-radius:12px;padding:10px 14px;margin-bottom:8px;transition:border-color .15s,background .15s}
+  .cseg.now{border-color:var(--blue);background:rgba(0,122,255,.06)}
+  .cseg.done{opacity:.45}
+  .cnum{flex:none;width:28px;height:28px;border-radius:50%;background:var(--label);color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;margin-top:6px}
+  .cseg.now .cnum{background:var(--blue)}
+  .cbody{flex:1;min-width:0}
+  .che{font-family:'Heebo',sans-serif;direction:rtl;text-align:right;font-size:24px;line-height:1.9}
+  .cen{font-size:16px;line-height:1.5;color:#3a3a3c}
+  .cen::before{content:"→ say: ";color:var(--muted);font-size:13px}
   .cskip{text-decoration:line-through;text-decoration-thickness:2px;color:#b3261e;background:rgba(255,59,48,.08);border-radius:6px;padding:0 4px}
   .cwrong{background:rgba(255,159,10,.22);border-bottom:2px dashed var(--amber);border-radius:4px;padding:0 3px}
   .cbanner{background:rgba(255,159,10,.12);border:2px solid var(--amber);border-radius:12px;padding:12px 14px;margin-bottom:16px;font-size:15px;line-height:1.5}
@@ -112,14 +122,22 @@
   <div id="cMain">
     <div class="card" id="cCard" style="display:none">
       <div id="cBanner"></div>
-      <div class="cinstr" id="cInstr">Read each phrase in Hebrew, then say it in English.</div>
-      <div class="che" id="cHe"></div>
-      <div class="cen" id="cEn"></div>
+      <div class="chow">
+        <b>Read it piece by piece.</b> Don't read all the Hebrew first.
+        <ol>
+          <li>Read piece <b>1</b> in Hebrew out loud.</li>
+          <li>Right away, say piece 1 in English.</li>
+          <li>Then piece 2 in Hebrew, its English, and so on.</li>
+        </ol>
+        <div class="ex">It should sound like: "<i>mei'eimosai korin</i>… from when do we read… <i>es shema</i>… the Shema…"</div>
+      </div>
+      <div id="cSegs"></div>
     </div>
     <div class="cdone" id="cDone" style="display:none"></div>
     <div class="row center">
       <button class="primary big" id="cStart">Get a passage</button>
       <button class="rec big" id="cRec" style="display:none">● Start recording</button>
+      <button class="primary big" id="cSegNext" style="display:none">Next piece →</button>
       <button id="cSkip" style="display:none">Skip this one</button>
       <button class="primary big" id="cNext" style="display:none">Next passage →</button>
     </div>
@@ -689,36 +707,42 @@ async function makeGradingPairs(heText, enText) {
   const cached = localStorage.getItem(cacheKey);
   if (cached) { try { const p = JSON.parse(cached); if (Array.isArray(p) && p.length) return p; } catch { localStorage.removeItem(cacheKey); } }
 
-  const raw = await callClaude(
-`Split this Hebrew/Aramaic text and its English translation into aligned PHRASE pairs for grading a student's oral translation.
+  // The model answers with word-number ranges rather than copying the Hebrew back, so Hebrew
+  // punctuation (e.g. gershayim in ר"מ) can't break its JSON and coverage is easy to verify.
+  const words = heText.split(/\s+/).filter(w => /[א-ת]/.test(w));
+  const ask = () => callClaude(
+`Split this numbered Hebrew/Aramaic text and its English translation into aligned PHRASE pairs for grading a student's oral translation.
 
-HEBREW:
-${heText}
+HEBREW WORDS:
+${words.map((w,i) => `${i}. ${w}`).join("\n")}
 
 ENGLISH:
 ${enText}
 
 Rules:
 - Each pair = one coherent thought unit (a clause or phrase), typically 2-6 Hebrew words. Never single words unless the word stands alone as a thought (e.g. שׁוֹאֲלִים as a ruling).
-- Together the pairs must cover the ENTIRE Hebrew text in order, no gaps, no overlaps, no reordering.
-- The "he" values, concatenated in order, must reproduce the Hebrew text word-for-word (keep nikud/punctuation as given).
+- Give each pair as a range of word numbers "from" to "to" (inclusive). Ranges must cover words 0 to ${words.length - 1} in order: no gaps, no overlaps, no reordering.
 - Each pair's "en" is the portion of the English that translates that Hebrew — rephrase minimally if the English order differs, but do not add or drop meaning.
 - Aim for 3-7 pairs for a text of this length.
 
-Return ONLY JSON: [{"he":"...","en":"..."}]`,
+Return ONLY JSON: [{"from":0,"to":2,"en":"..."}]`,
     "You split aligned Hebrew/English texts into phrase pairs. Output ONLY valid JSON.",
     2000
   );
-  const pairs = parseJson(raw);
-  // integrity check: pair word count must equal text word count, else fall back to one block
-  const heWords = heText.split(/\s+/).filter(w => /[א-ת]/.test(w)).length;
-  const pairWords = pairs.reduce((s, p) => s + (p.he || "").split(/\s+/).filter(w => /[א-ת]/.test(w)).length, 0);
-  if (!Array.isArray(pairs) || !pairs.length || pairWords !== heWords) {
-    console.warn("Grading pairs failed integrity check, grading as one block", { heWords, pairWords });
-    return [];
+  const valid = r => Array.isArray(r) && r.length && r.every((p, k) =>
+    Number.isInteger(p.from) && Number.isInteger(p.to) && p.to >= p.from && typeof p.en === "string" &&
+    p.from === (k ? r[k-1].to + 1 : 0)) && r[r.length-1].to === words.length - 1;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let ranges = null;
+    try { ranges = parseJson(await ask()); } catch (e) { console.warn("Grading pairs: bad JSON, retrying", e); }
+    if (valid(ranges)) {
+      const pairs = ranges.map(p => ({he: words.slice(p.from, p.to + 1).join(" "), en: p.en}));
+      localStorage.setItem(cacheKey, JSON.stringify(pairs));
+      return pairs;
+    }
+    console.warn("Grading pairs failed integrity check", ranges);
   }
-  localStorage.setItem(cacheKey, JSON.stringify(pairs));
-  return pairs;
+  return [];   // caller grades as one block
 }
 async function getIndexedPairs(){
   const heText = $("heText").value.trim(), enText = $("enText").value.trim();
@@ -1209,8 +1233,9 @@ $("btnAccuracy").onclick = async () => {
 // Scenarios carry their own ground truth in `expected`, so incorrect readings are labelled before anyone reviews them.
 const esc = t => String(t||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
 let cRecorder = null, cChunks = [], cExpected = null, cStartedAt = 0;
+let cShown = [], cSeg = -1, cSegTimes = [];   // segment start times (ms into the recording) let each piece be cut out later
 function cShow(state, msg){
-  const vis = {cStart:["idle"], cRec:["ready","recording"], cSkip:["ready"], cNext:["done"]};
+  const vis = {cStart:["idle"], cRec:["ready","recording"], cSegNext:["recording"], cSkip:["ready"], cNext:["done"]};
   Object.entries(vis).forEach(([id, states]) => { $(id).style.display = states.includes(state) ? "" : "none"; });
   $("cCard").style.display = ["ready","recording","processing"].includes(state) ? "" : "none";
   $("cDone").style.display = state==="done" ? "" : "none";
@@ -1234,10 +1259,14 @@ Return ONLY JSON: [{"idx":0,"en":"..."}]`,
 async function contribPrepare(){
   cShow("preparing", "Finding a passage…");
   try{
-    await loadRandomPassage(20);
-    cShow("preparing", "Getting it ready…");
-    await ensureWordKey();
-    const ip = await getIndexedPairs();
+    let ip = [];
+    for(let tries = 0; tries < 3 && ip.length < 2; tries++){
+      // a passage that can't be split into pieces would be one big block, so pick another
+      await loadRandomPassage(20);
+      cShow("preparing", "Getting it ready…");
+      await ensureWordKey();
+      ip = await getIndexedPairs();
+    }
     const pairs = ip.map(p => ({he:p.he, en:p.en}));
     $("pairsJson").value = JSON.stringify(pairs);   // freeze the pairs so grading matches what was shown
     const shown = pairs.map(p => ({...p, mark:null}));
@@ -1260,11 +1289,30 @@ async function contribPrepare(){
       cExpected.scenario === "skipPhrase" ? `<div class="cbanner"><b>⚠ Testing passage: make a mistake on purpose.</b><br>Skip the <span class="cskip">crossed-out</span> phrase completely. Don't read it and don't translate it. Do everything else normally.</div>`
     : cExpected.scenario === "wrongTranslation" ? `<div class="cbanner"><b>⚠ Testing passage: the <span class="cwrong">highlighted</span> English is WRONG on purpose.</b><br>It is not the real meaning. Please say it exactly as written anyway. We're checking that the grader catches the mistake.</div>`
     : "";
-    $("cHe").innerHTML = shown.map(p => p.mark === "skip" ? `<span class="cskip">${esc(p.he)}</span>` : esc(p.he)).join(" ");
-    $("cEn").innerHTML = shown.map(p => p.mark ? `<span class="${p.mark === "skip" ? "cskip" : "cwrong"}">${esc(p.en)}</span>` : esc(p.en)).join(" ");
+    cShown = shown; cSeg = -1; cSegTimes = [];
+    renderSegs();
     cShow("ready", "Press record when you're ready. Press stop when you're done.");
   }catch(e){ console.error(e); cShow("error", "Couldn't load a passage: " + e.message); }
 }
+function renderSegs(){
+  $("cSegs").innerHTML = cShown.map((p,i) => `
+    <div class="cseg${i === cSeg ? " now" : i < cSeg ? " done" : ""}" id="cseg${i}">
+      <div class="cnum">${i+1}</div>
+      <div class="cbody">
+        <div class="che">${p.mark === "skip" ? `<span class="cskip">${esc(p.he)}</span>` : esc(p.he)}</div>
+        <div class="cen">${p.mark ? `<span class="${p.mark === "skip" ? "cskip" : "cwrong"}">${esc(p.en)}</span>` : esc(p.en)}</div>
+      </div>
+    </div>`).join("");
+}
+function cGoSeg(i){
+  cSeg = i; cSegTimes[i] = Date.now() - cStartedAt;
+  renderSegs();
+  $("cseg"+i)?.scrollIntoView({behavior:"smooth", block:"center"});
+  const last = i >= cShown.length - 1;
+  $("cSegNext").disabled = last;
+  $("cSegNext").textContent = last ? "Last piece: press Stop when done" : `Next piece → (${i+2})`;
+}
+$("cSegNext").onclick = () => { if(cSeg < cShown.length - 1) cGoSeg(cSeg + 1); };
 $("cStart").onclick = contribPrepare;
 $("cSkip").onclick = contribPrepare;
 $("cNext").onclick = contribPrepare;
@@ -1278,7 +1326,8 @@ $("cRec").onclick = async () => {
     cRecorder.ondataavailable = e => cChunks.push(e.data);
     cRecorder.onstop = () => { stream.getTracks().forEach(t => t.stop()); contribSubmit(new Blob(cChunks, {type:"audio/webm"})); };
     cRecorder.start(); cStartedAt = Date.now();
-    cShow("recording", "Recording… read each phrase in Hebrew, then in English.");
+    cShow("recording", "Recording. Read the blue piece in Hebrew, say it in English, then tap Next piece.");
+    cGoSeg(0);
   }catch(e){ cShow("ready", "Couldn't use the microphone: " + e.message); }
 };
 async function contribSubmit(blob){
@@ -1289,7 +1338,8 @@ async function contribSubmit(blob){
     targetRunId = await window.kbStore.saveRun({
       mode:"contributor", status:"processing", source:"recording",
       heText: $("heText").value.trim(), enText: $("enText").value.trim(), refLabel: currentRef,
-      wordKey, ip: await getIndexedPairs(), expected: cExpected }, blob);
+      wordKey, ip: await getIndexedPairs(), expected: cExpected,
+      segmentTimes: cSegTimes.map((ms, i) => ({idx: i, startMs: ms ?? null})) }, blob);
     cShow("processing", "Saved ✓. Finishing up, about 20 seconds… please keep this page open.");
     await transcribe(blob);
     await lastRunSave;
